@@ -6,6 +6,10 @@ Format: each section lists changes for a tagged release. Plugin and template ver
 
 ## [Unreleased]
 
+- **Feat (094): a merge conflict re-plans instead of escalating.**
+  - `cplat build merge` aborts a conflicting merge and sets the task aside; `cplat build replan-commit` accepts the architect's amendment only when it changes `files` / `depends_on` / `parallel_safe` of open tasks.
+  - A task is re-planned once and a build at most 3 times, then it escalates. Conflicts are never resolved by hand.
+  - The Final Report says when the plan was amended.
 - **Feature (088): platform failures become deduplicated issues.** [ADR-033](adr/033-auto-filed-issues-with-signatures.md)
   - `cplat ship escalate --cause platform` and a crash of any `cplat` command inside a recorded run file the failure in `ika100/sdlc-foundry`. Causes `code`, `decision` and `environment` are only recorded; a missing or unknown cause becomes `unknown`.
   - Each issue carries one `Signature: platform:<16 hex>` line and the label `auto-filed`; a repeat adds a +1 comment to the oldest open issue, and a repeat after close files a new issue linking the old one (nothing after `wontfix`). Repo, spec and branch names are removed.
