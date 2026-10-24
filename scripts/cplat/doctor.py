@@ -213,11 +213,31 @@ def check_service_repos_token(repo: Path) -> list[dict]:
     return [check(OK, name, "set: gitops CI can read the service repos named by Service-ref markers")]
 
 
+def check_run_store() -> dict:
+    """The private run store (spec 087): only a public store fails."""
+    import runs
+    name = "run store"
+    try:
+        st = runs.store_status(timeout=10.0)
+    except Exception as e:  # noqa: BLE001
+        return check(WARN, name, f"could not check: {e}", "cplat runs flush")
+    if st.state == "unset":
+        return check(WARN, name, "not configured", "cplat runs init <owner/name>")
+    if st.state == "public":
+        return check(FAIL, name, f"{st.slug} is public: records are only written to a private repo",
+                     f"gh repo edit {st.slug} --visibility private --accept-visibility-change-consequences")
+    if st.state == "unreachable":
+        return check(WARN, name, f"{st.slug} unreachable: {st.detail}", f"gh repo view {st.slug}")
+    if st.buffered or st.pending:
+        return check(WARN, name, f"{st.slug}: {st.buffered} buffered record(s), {st.pending} pending filing(s)", "cplat runs flush")
+    return check(OK, name, st.slug)
+
+
 def run_checks(repo: Path) -> list[dict]:
     import gates
     return [*check_tools(), *check_gh(), *check_docker(), *check_kube(), *check_plugins(), *check_platform_source(), *check_repo(repo),
             *gates.check_gates(repo), *check_gitops_token(repo),
-            *check_service_repos_token(repo)]
+            *check_service_repos_token(repo), check_run_store()]
 
 
 def main(argv: list[str]) -> int:

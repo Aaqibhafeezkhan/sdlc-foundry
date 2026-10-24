@@ -37,3 +37,4 @@ Decisions that shape how the platform works, with the context and the alternativ
 | [029](029-external-services.md) | External services in services.yaml: hand-written kustomize packages or Helm charts, wired and pinned by render |
 | [030](030-image-tags-are-the-full-commit-sha.md) | Image tags are the full commit sha (`sha-<40>`); `sha-<7>` is accepted for one release |
 | [031](031-repo-owned-companions-for-skeleton-files.md) | Skeleton files stay platform-owned; repo additions go in repo-owned companions (`ci-extra`, own permissions, own workflows, project notes) that updates never touch |
+| [032](032-private-run-store.md) | Every run is recorded in a private run store: one file per run, one commit per flush, buffered locally when unreachable |
