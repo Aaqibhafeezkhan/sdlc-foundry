@@ -58,8 +58,8 @@ $TOUCHED_FILES
 </touched-files>
 ```
 
-Then:
-- Run the existing test suite via `devbox run test-fast`
+Then the **brief** under the headings `Criteria` (the criteria the bug breaks, or `none`), `Task` (root cause and files), `Contract` (`none`), `Tests` and `Commands`; the agent starts from it, so do not tell it to read the spec files:
+- Run the existing test suite via `cplat quiet test-fast` (it prints one line on success, the tail and a log path on failure)
 - Write a regression test that would have caught this bug (anchor it on the files in `<touched-files>`). If the broken behaviour is stated by a spec criterion (`docs/specs/*/spec.md`, `AC-<NNN>.<n>`), name that id in the test so `cplat spec trace` links it; never edit an existing acceptance test to make it pass
 - Confirm the bug is resolved
 
@@ -78,27 +78,17 @@ If the tester reports the bug is NOT fixed:
 
 After the tester confirms the bug is resolved:
 
-1. Check for uncommitted changes (`git status --porcelain`). If non-empty, commit with a conventional commit message:
-   ```bash
-   git add -A
-   git commit -m "fix(<scope>): <imperative description of the fix>"
-   ```
+Write a short PR body with the Write tool to `.pr-body.md` in the repo root (never into `.git/`: Claude Code refuses edits there; cplat moves it out of the work tree before it commits) (summary of the bug and the fix, the regression test, `{{CLOSES}}` on its own line under "Related issues"), then make **one** Bash call:
 
-2. Push the branch (pre-approved for `fix/*` branches):
-   ```bash
-   git push -u origin <current-branch>
-   ```
+```bash
+cplat pr open --title "fix(<scope>): <imperative description of the fix>" [--issues "#NNN …"]
+```
 
-3. Create the PR (`gh pr create` is allowlisted, so this also runs in a headless session):
-   ```bash
-   gh pr create \
-     --title "fix(<scope>): <same description as the commit>" \
-     --fill-verbose
-   ```
+It commits everything with `-s`, pushes the branch, finds the open issues to close and opens the PR.
 
-**When `gh pr create` is not allowed** (headless run, untrusted workspace, or the user declines; spec 051): this is not an error. The branch is pushed; write the PR body to `.git/PR_BODY.md` and end the report with the exact command as its last line: `gh pr create --base main --head <branch> --title "<title>" --body-file .git/PR_BODY.md`.
+Relay its three lines (`commit:`, `push:`, `pr:`). Exit 1: report which part failed and stop; `pr: failed: already open <url>` means the PR exists, so use that URL. Exit 2: fix the reason it prints, then call it again. A re-run never makes a second commit or PR.
 
-4. Print the PR URL.
+**`pr: ready: <command>`** (headless run, untrusted workspace, or `gh pr create` not allowed; spec 051) is not an error: the branch is pushed and cplat has moved the body to `.git/PR_BODY.md`. End the report with that exact command as its last line.
 
 **If Phase 0 found we were already on `main`:** warn "Skipping PR creation — working directly on main." and skip Phase 4.
 

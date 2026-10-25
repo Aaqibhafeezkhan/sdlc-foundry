@@ -1,0 +1,58 @@
+# Benchmarks for spec 100
+
+Prices of 2026-10-25 (estimates; output tokens as reported, so output cost is a lower bound). Sample `ika100/todo-api`.
+
+| Step | Workflow | Run | Outcome | PR | Gates | Reviewer | Calls | Tokens | Est. cost | Coordinator | Plugins | Note |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| baseline | quick-task v2 | `20261025T113632Z-73dcf110` | done | todo-api#9 | n/a (quick-task: quality + tests ran) | — | 22 | 674,791 | $0.48 | opus (user default) | installed 4.5.0 |  |
+| baseline | build v3 | `20261025T123218Z-f4e36dbe` | done | todo-api#11 | acc passed, sec passed | pass | 81 | 2,617,700 | $1.64 | opus (user default) | installed 4.5.0 | v3 task; superseded by the v4 baselines below |
+| 1 | quick-task v2 | `20261025T131302Z-cbc6693e` | done | todo-api#12 | n/a (quick-task: quality + tests ran) | — | 10 | 366,432 | $0.16 | sonnet | worktree @eef4db9 | coordinator did the change itself (no coder/quality/tester agents) and ran lint, types and tests |
+| 1 | build v3 | `20261025T131439Z-f8398a6a` | failed | — | acc passed, sec passed | not reached | 65 | 2,120,178 | $1.13 | sonnet | worktree @eef4db9 | stopped before push: build.md said push/PR need confirmation (fixed in 208c9f2) |
+| 1 | build v3 | `20261025T132523Z-7606b481` | failed | — | acc not run, sec not run | not reached | 44 | 1,265,392 | $0.68 | sonnet | worktree @208c9f2 | escalated: tester read AC-900.2 without a request body (spec 900 v4 fixes the wording) |
+| baseline v4 | build v4 | `20261025T133329Z-d19e689b` | done | PR (closed by reset) | acc passed, sec passed | pass | 84 | 2,712,447 | $1.75 | opus | worktree @3f5201b |  |
+| 1 | build v4 | `20261025T134409Z-7971f596` | done | PR (closed by reset) | acc passed, sec passed | pass | 71 | 2,380,239 | $1.25 | sonnet | worktree @3f5201b |  |
+| baseline v4 | build v4 | `20261025T135136Z-d3ddd653` | done | PR (closed by reset) | acc passed, sec passed | pass | 107 | 3,467,205 | $2.12 | opus | worktree @3f5201b |  |
+| 1 | build v4 | `20261025T140715Z-578ba653` | done | PR (closed by reset) | acc passed, sec passed | pass | 66 | 2,280,157 | $1.20 | sonnet | worktree @3f5201b |  |
+| 2 | quick-task v2 | `20261025T142815Z-b2f8093c` | failed | — | n/a (quick-task: quality + tests ran) | — | 6 | 222,476 | $0.14 | sonnet | worktree @ccbc6da | failed: the session could not write .git/PR_BODY.md (fixed in 113030f: .pr-body.md) |
+| 2 | quick-task v2 | `20261025T153130Z-674b051e` | done | PR (closed by reset) | n/a (quick-task: quality + tests ran) | — | 7 | 251,537 | $0.08 | sonnet | worktree @2b660e1 |  |
+| 2 | build v4 | `20261025T153255Z-44f7c252` | done | PR (closed by reset) | acc passed, sec passed | pass | 56 | 1,698,198 | $1.00 | sonnet | worktree @2b660e1 |  |
+| 2 | build v4 | `20261025T154213Z-71619373` | done | PR (closed by reset) | acc passed, sec passed | pass | 81 | 2,575,727 | $1.32 | sonnet | worktree @2b660e1 |  |
+| 3 | quick-task v2 @ef04f90 | `20261025T160351Z-67d8fd20` | done | PR (closed by reset) | n/a (quick-task: quality + tests ran) | — | 7 | 246,675 | $0.13 | sonnet | worktree @dcf7612 |  |
+| 3 | build v4 @ef04f90 | `20261025T160526Z-4c318bb8` | done | PR (closed by reset) | acc passed, sec passed | pass | 56 | 1,769,214 | $1.04 | sonnet | worktree @dcf7612 |  |
+| 3 | build v4 @ef04f90 | `20261025T161313Z-84282c71` | failed | — | acc not run, sec not run | not reached | 27 | 841,667 | $0.59 | sonnet | worktree @dcf7612 | failed: `git commit -am` not allowlisted (fixed: templates allow `git commit *`, #173, todo-api#22) |
+| 3 | build v4 @1e004f2 | `20261025T162946Z-6ac9e1cf` | done | PR (closed by reset) | acc passed, sec passed | pass | 65 | 2,181,191 | $1.14 | sonnet | worktree @1c19108 | sample @1e004f2 (git commit * allowed) |
+| 3 | build v4 @1e004f2 | `20261025T163707Z-e6e75020` | done | PR (closed by reset) | acc passed, sec passed | pass | 68 | 2,163,118 | $1.17 | sonnet | worktree @1c19108 | sample @1e004f2 |
+| 4 | quick-task v2 @1e004f2 | `20261025T165405Z-8cb3357c` | done | PR (closed by reset) | n/a (quick-task: quality + tests ran) | — | 8 | 302,856 | $0.15 | sonnet | worktree @09121f8 |  |
+| 4 | build v4 @1e004f2 | `20261025T165559Z-37076823` | done | PR (closed by reset) | acc passed, sec passed | pass | 69 | 2,186,363 | $1.19 | sonnet | worktree @09121f8 |  |
+| 4 | build v4 @1e004f2 | `20261025T170445Z-7913b9a4` | done | PR (closed by reset) | acc passed, sec passed | pass | 76 | 2,422,331 | $1.33 | sonnet | worktree @09121f8 |  |
+
+## Step 1 — coordinator on Sonnet: accepted
+
+- **quick-task:** $0.48 → **$0.16** (one run, done, PR). Meets AC-100.15's ≤ $0.30 already.
+- **build v4** (same worktree plugins, only the model differs): Opus median **$1.94** ($1.75, $2.12; 10 and 15 min), Sonnet median **$1.22** ($1.25, $1.20; 7 and 8 min): **−37%**, all four runs done with a PR and both gates passed. Relative to the v4 baseline the 30% build target of AC-100.16 is ≤ **$1.36**.
+- Two prompt fixes were needed for a Sonnet coordinator (208c9f2): `build.md` no longer says push and PR need confirmation, and tester/coder agents write files with Write/Edit, never via a shell heredoc.
+
+## Step 2 — one `cplat pr open` for commit, push and PR: accepted
+
+- **quick-task:** $0.16 → **$0.08** (7 calls, done, PR).
+- **build v4:** median $1.22 → **$1.16** ($1.00, $1.32; both done with a PR, both gates passed). Within the noise of two runs, no regression.
+- Fixes found by b2: the PR body is written to `.pr-body.md` (Claude Code refuses edits under `.git/`), and `--plugins` benchmarks point `CPLAT_PLATFORM` at the checkout so its `cplat` runs (2b660e1). Two build runs failed on the account's session limit (not counted).
+
+## Step 3 — compact briefs and quiet output: accepted, no measurable saving
+
+- **quick-task:** $0.13 (one run; step 2 had $0.08, step 1 $0.16 — single quick-task runs vary by about ±$0.05).
+- **build v4:** $1.04 (sample @ef04f90), $1.14 and $1.17 (sample @1e004f2): median **$1.14** vs $1.16 in step 2, all done with a PR and both gates passed. Flat, not a regression (the rule needs both workflows to cost more).
+- The benchmark spec is tiny, so agents read little either way; the briefs target larger specs (the 085–098 round read spec.md 220 times).
+
+## Step 4 — rare branches in reference files: accepted, marked `regression` (within noise)
+
+- **quick-task:** $0.15 (step 3: $0.13). **build v4:** $1.19 and $1.33, median **$1.26** (step 3: $1.14). Both a little higher than step 3, so by the rule the step is marked `regression` for the reviewer; the outcome held in every run (done, PR, both gates passed), so it is not rolled back. The command files shrank only modestly (build.md 20.8 → 19.3 KB, ship.md 10.1 → 8.8 KB) because existing tests require phrases in the pointer lines; the difference is inside the ±$0.10 spread of single build runs.
+
+## Final (AC-100.15, AC-100.16)
+
+| | Baseline (Opus coordinator) | After steps 1–4 | Target | Met |
+|---|---|---|---|---|
+| quick-task | $0.48 | **$0.15** | ≤ $0.30 | yes |
+| build v4 (median of 2) | $1.94 | **$1.26** | ≤ $1.36 | yes |
+
+Nearly all of the saving comes from step 1 (Sonnet coordinator) and step 2 (one `cplat pr open`); steps 3 and 4 are neutral on this small benchmark task.
