@@ -13,6 +13,10 @@ resumes it from disk (spec status, plan.md `done` flags, the ship state). Logs: 
 The coordinator model (spec 100) is always passed as `--model`: the flag, else `coordinator_model` in the repo's
 `.platform-settings.yml`, else in ~/.config/sdlc-foundry/settings.yml (see settings.py), else sonnet; only sonnet, opus
 and haiku are accepted. `--plugin-dir PATH` (repeatable) loads a plugin from a folder for the sessions.
+
+One budget (spec 102) covers the run and every ship under it: 180 min, 60 invocations, 6 CI reruns and $15 per spec in the
+prompt; `--budget KEY=VALUE` (repeatable, a number or `off`) replaces a limit. The next session is not started once a limit
+is used up: `budget exhausted: <limit>`, stop reason `budget`, exit 1.
 """
 from __future__ import annotations
 
@@ -29,6 +33,7 @@ import time
 import uuid
 from pathlib import Path
 
+import budget
 import runs as runlog
 import settings
 import ship
@@ -156,6 +161,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--no-wait", action="store_true", help="inside the quiet window: exit (code 3) instead of waiting")
     ap.add_argument("--model", help="coordinator model: sonnet (default), opus or haiku; else the settings files")
     ap.add_argument("--plugin-dir", action="append", default=[], help="load a plugin from this folder (repeatable)")
+    ap.add_argument("--budget", action="append", default=[], metavar="KEY=VALUE",
+                    help="replace a limit of the run's budget: minutes, invocations, reruns, cost (a number or off; spec 102)")
     ap.add_argument("--dry-run", action="store_true")
     ns = ap.parse_args(argv)
     repo = Path(ns.repo).resolve()
@@ -174,7 +181,11 @@ def main(argv: list[str]) -> int:
         return 0
     print(f"coordinator: {model} ({source})", flush=True)
     state_fields = {"coordinator_model": model, "coordinator_model_source": source}
+    options = budget.parse_options(ns.budget)
     rid = runlog.start("headless", repo=runlog.repo_slug(repo), mode="headless")
+    budget.open_root(rid, budget.work_key(repo, budget.spec_refs(prompt), prompt), ships=budget.ships_in(prompt), options=options, repo=repo)
+    if line := budget.limits_line(rid):
+        print(line, flush=True)
     state = {"sessions": 0, "result": "", "code": EXIT_STOPPED}
     try:
         return _drive(ns, repo, prompt, window, cmd, rid, state)
@@ -186,13 +197,16 @@ def main(argv: list[str]) -> int:
     finally:
         if rid:
             reason, outcome = stop_of(state["result"], state["code"])
-            runlog.finish(rid, outcome, fields={"command": prompt, "sessions": state["sessions"], "stop_reason": reason, **state_fields})
+            esc = {"reason": state["result"], "cause": "decision"} if reason == "budget" else None
+            runlog.finish(rid, outcome, escalation=esc, fields={"command": prompt, "sessions": state["sessions"], "stop_reason": reason, **state_fields})
 
 
 def stop_of(result: str, code: int) -> tuple[str, str]:
     """(stop_reason, outcome) of a headless invocation, from its result line (spec 087)."""
     if result == "finished" or result.startswith("shipped"):
         return "done", "done"
+    if "budget exhausted:" in result:
+        return "budget", "escalated"
     if result.startswith("needs you") or result.startswith("no progress"):
         return "escalated", "escalated"
     if result.startswith("stopped after") or "time budget" in result:
@@ -206,6 +220,7 @@ def _drive(ns: argparse.Namespace, repo: Path, prompt: str, window, cmd: list[st
     log = log_dir(repo) / f"{clock():%Y-%m-%d_%H%M%S}.log"
     begin: dt.datetime | None = None    # the budget starts with the first session, not while waiting out a quiet window
     runs, code = 0, 0
+    snapped = False                    # spec 102: a stop that already wrote the recovery snapshot
     last: tuple | None = None
     result = "finished"
     while runs < ns.max_runs:
@@ -222,6 +237,16 @@ def _drive(ns: argparse.Namespace, repo: Path, prompt: str, window, cmd: list[st
         if left <= 1:
             result = f"time budget of {ns.max_minutes:.0f} min used up"
             break
+        limit = budget.check(rid, "session")
+        if limit:                                       # spec 102: nothing is killed, the next session is not started
+            result = budget.stop(rid, limit, "session")
+            if (open_ship := unfinished(repo)) is not None:
+                ship.budget_stop(repo, open_ship, limit, "session")
+            else:
+                budget.snapshot(repo, "headless", result, [])
+            snapped = True
+            break
+        budget.count_invocation(rid)
         runs += 1
         state["sessions"] = runs
         print(f"run {runs}/{ns.max_runs}: {prompt}  (log: {log})", flush=True)
@@ -238,12 +263,15 @@ def _drive(ns: argparse.Namespace, repo: Path, prompt: str, window, cmd: list[st
         if key == last:
             result = f"no progress: two runs in a row ended in phase {st['phase']} with nothing changed"
             ship.escalate(repo, result)
+            snapped = True
             break
         last = key
         print(f"run {runs} ended in phase {st['phase']} (exit {code}); resuming", flush=True)
     else:
         result = f"stopped after {ns.max_runs} runs, ship run still unfinished"
     ok = result == "finished" or result.startswith("shipped")
+    if not snapped and (result.startswith("stopped after") or "time budget" in result):
+        budget.snapshot(repo, (unfinished(repo) or {}).get("phase") or "headless", result, [])
     state.update(result=result, code=EXIT_DONE if ok else EXIT_STOPPED)
     return finish(repo, log, result, EXIT_DONE if ok else EXIT_STOPPED)
 
