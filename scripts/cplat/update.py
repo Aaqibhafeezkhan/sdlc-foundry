@@ -18,6 +18,7 @@ import gates
 import gitops
 import migrate5
 import settingsmerge
+import shapecmd
 from core import PLATFORM_ROOT, PlatformError, Report, run
 
 
@@ -45,6 +46,9 @@ def resolve(argv: list[str]) -> dict:
     repo = Path(ns.repo).resolve()
     if not (repo / ".git").exists():   # a file in a git worktree
         raise PlatformError(f"{repo} is not a git repository")
+    if shapecmd.resolve(repo) == "platform":
+        raise PlatformError("the platform repo is not updated from a template",
+                            hint="the platform is released through its own procedure: CONTRIBUTING.md, Releases")
     if not (repo / ".copier-answers.yml").is_file():
         raise PlatformError("no .copier-answers.yml in the repo", hint="see docs/ADOPTING.md → 'Adopt the template for skeleton updates'")
     if run(["git", "status", "--porcelain"], cwd=repo).stdout.strip():

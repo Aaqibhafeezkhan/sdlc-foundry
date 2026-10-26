@@ -192,8 +192,16 @@ def _open_budget(repo: Path, st: dict, options: dict) -> None:
     budget.open_root(st.get("run_id"), budget.work_key(repo, st["spec"], st["spec"]), options=options, repo=repo)
 
 
+def _record_shape(st: dict) -> None:
+    """Spec 123: the shape the run was started for, on the run record. Never raises."""
+    if st.get("shape"):
+        runs.set_section(st.get("run_id"), "shape", st["shape"])
+
+
 def start(repo: Path, ref: str, merge: bool, take_over: bool = False, product: Path | None = None,
           budget_options: list[str] | dict | None = None) -> dict:
+    import shapecmd
+    shape = shapecmd.resolve(repo)             # spec 123: a declaration error stops here, before any state changes
     options = budget.parse_options(budget_options)
     link = product_link(product) if product else None
     sp = specmod.find(repo, ref)
@@ -218,14 +226,17 @@ def start(repo: Path, ref: str, merge: bool, take_over: bool = False, product: P
         st.pop("escalated", None)              # a re-run after an escalation resumes where it stopped
         st.pop("cause", None)
         st["blocks"] = 0
+        if shape:
+            st["shape"] = shape
         save_state(repo, st)
+        _record_shape(st)
         runs.link_parent(st.get("run_id"))
         _open_budget(repo, st, options)
         return st
     if sp.status in {"draft", "superseded"}:
         raise PlatformError(f"{sp.id} is '{sp.status}'; only an approved spec is shipped",
                             hint=f"answer its questions and approve it: `/component:spec approve {sp.number}`")
-    if missing_gitops_token(repo):
+    if shape != "platform" and missing_gitops_token(repo):
         raise PlatformError("this repo is linked to a gitops-app, but the secret GITOPS_TOKEN is not set: dev would never "
                             "be pinned (spec 077)", hint=GITOPS_TOKEN_FIX.format(slug=service_slug(repo)))
     if sp.status == "done":
@@ -240,7 +251,10 @@ def start(repo: Path, ref: str, merge: bool, take_over: bool = False, product: P
           "started": dt.datetime.now().isoformat(timespec="seconds"), "recorded": False}
     if link:
         st["product"] = link
+    if shape:
+        st["shape"] = shape
     save_state(repo, st)
+    _record_shape(st)
     runs.link_parent(st.get("run_id"))
     _open_budget(repo, st, options)
     return st
@@ -327,7 +341,7 @@ def _file_platform_failure(repo: Path, st: dict, reason: str, command: str | Non
             kind="platform",
             signature=autoissue.signature("platform", cmd, st.get("phase") or "none", reason, names=names),
             reason=reason, command=cmd, phase=st.get("phase") or "none", evidence=feedback.tail(evidence),
-            run_id=rid, shape=core.read_stamp(repo).get("shape", "none"), names=names,
+            run_id=rid, shape=st.get("shape") or core.read_stamp(repo).get("shape", "none"), names=names,
             environment=feedback.diagnostics(repo))
         report.extend(autoissue.file(draft, run_id=rid).lines)
     except Exception as e:  # noqa: BLE001  (an escalation always completes)
@@ -963,7 +977,7 @@ def _smoke_finish(repo: Path, st: dict, result: smoke.SmokeResult, lines: list[s
         lines.append(f"Smoke (dev): {row}")
         return False, lines
     out = smoke.file_issue(result, service_slug=service_slug(repo), spec_id=sid, image=st.get("deployed"),
-                           run_id=st.get("run_id"), shape=core.read_stamp(repo).get("shape", "none"))
+                           run_id=st.get("run_id"), shape=st.get("shape") or core.read_stamp(repo).get("shape", "none"))
     lines += out.lines
     if out.url:
         issue = out.url
@@ -1033,6 +1047,14 @@ def deploy(repo: Path, timeout: float, interval: float, context: str | None,
     after-release gitops PRs and wait for every app they name (spec 076)."""
     import shapecmd
     st = require_state(repo)
+    if st["phase"] == "done":
+        return True, ["already done"]
+    if st.get("shape") == "platform" or (not st.get("shape") and shapecmd.resolve(repo) == "platform"):
+        # spec 123: nothing to deploy; no kube context, pin PR, Argo, smoke or staging
+        st["smoke"] = {"outcome": "not-run", "row": "not deployable", "reason": "not deployable (platform)"}
+        st["staging"] = {"state": "skipped", "reason": "not deployable (platform)", "row": "Promotion (staging): not deployable"}
+        return _done(repo, st, ["not deployable (platform): nothing to deploy", "Smoke (dev): not deployable",
+                                "Promotion (staging): not deployable"])
     context = context or (st.get("product") or {}).get("context")
     if not context:                            # headless coordinators rarely pass --context: take the configured one
         import settings
