@@ -1,7 +1,7 @@
 ---
 spec_id: 114-the-platform-speaks-the-domain-model-5-0
 title: The platform speaks the domain model (5.0)
-status: approved
+status: done
 priority: P1
 ---
 
@@ -144,3 +144,5 @@ ADR-053 settles one vocabulary for the platform (System, Component, API, Resourc
 - 2026-10-26 created
 - 2026-10-26 open questions answered
 - 2026-10-26 approved
+- 2026-10-26 building
+- 2026-10-26 done

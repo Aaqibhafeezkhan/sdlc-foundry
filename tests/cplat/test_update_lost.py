@@ -25,7 +25,7 @@ def commit(repo, msg="own changes"):
 
 
 def render(new_service, parent):
-    new_service([NAME, "desc", "--type", "service-go", "--no-github", "--skip-tasks", "--dir", str(parent), "--org", "acme"])
+    new_service([NAME, "desc", "--type", "service", "--lang", "go", "--no-github", "--skip-tasks", "--dir", str(parent), "--org", "acme"])
     return parent / NAME
 
 
@@ -64,7 +64,7 @@ def go(repo, monkeypatch, capsys, baseline, *extra):
     """Run the update with `baseline` as the render of the previous version (None: it cannot be rendered); returns its --json."""
     monkeypatch.setattr(update, "render_baseline", lambda *a, **k: baseline)
     capsys.readouterr()
-    assert update.main(["--repo", str(repo), "--skip-tasks", "--json", *extra]) == 0
+    assert update.main(["--repo", str(repo), "--skip-tasks", "--json", "--migrate", *extra]) == 0
     return json.loads(capsys.readouterr().out)
 
 
@@ -201,7 +201,7 @@ def test_replaced_settings_and_skeleton_files_say_where_the_addition_belongs(pai
     assert set(f) == {".github/workflows/ci.yml", "CLAUDE.md", ".golangci.yml"}
     assert "ci-extra" in f[".github/workflows/ci.yml"] and "workflow file of your own" in f[".github/workflows/ci.yml"]
     assert ".claude/project-notes.md" in f["CLAUDE.md"]
-    assert "git checkout HEAD~1 -- .golangci.yml" in f[".golangci.yml"] and "/shared:report-issue" in f[".golangci.yml"]
+    assert "git checkout HEAD~1 -- .golangci.yml" in f[".golangci.yml"] and "/issue:report" in f[".golangci.yml"]
     assert any(s.startswith("replaced .github/workflows/ci.yml: the template's version wins;") for s in out["next"])
     assert not any("review MODIFIED" in s for s in out["next"])
 

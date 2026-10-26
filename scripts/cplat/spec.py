@@ -269,7 +269,7 @@ def check(spec: Spec, *, require: str | None = None, shape: str | None = None) -
     rank = RANK.get(spec.status, -1)  # superseded has no rank: it never satisfies --require
     if require and rank < RANK[require]:
         errs.append(f"status is '{spec.status}', needs '{require}' or later"
-                    + (f" — approve it with `/svc:spec approve {spec.number}`" if require == "approved" else ""))
+                    + (f" — approve it with `/component:spec approve {spec.number}`" if require == "approved" else ""))
     if spec.status == "superseded":
         return errs
     if rank >= RANK["approved"]:
@@ -294,7 +294,7 @@ def check_plan(spec: Spec, meta: dict, _body: str) -> list[str]:
     if spec.meta.get("shape") and meta.get("shape") != spec.meta["shape"]:
         errs.append(f"shape '{meta.get('shape')}' must equal the spec's shape '{spec.meta['shape']}'")
     if meta["spec_hash"] != spec.ac_hash():
-        errs.append("the acceptance criteria changed after this plan was written; re-plan with `/svc:plan "
+        errs.append("the acceptance criteria changed after this plan was written; re-plan with `/component:plan "
                     f"{spec.number}` (or set spec_hash: {spec.ac_hash()} if the change does not affect the tasks)")
     tasks = meta["tasks"]
     if not isinstance(tasks, list) or not tasks:
@@ -551,8 +551,8 @@ def new(root: Path, title: str, *, shape: str | None, priority: str, tracks: lis
     return spec
 
 
-def addon_env(app_root: Path, addon: str) -> list[str]:
-    """Env variables an addon gives a service that uses it: render.py's ADDONS table (the contract, ADR-020)."""
+def resource_env(app_root: Path, addon: str) -> list[str]:
+    """Env variables a resource gives a component that uses it: render.py's ADDONS table (the contract, ADR-020)."""
     for render in (app_root / "scripts" / "render.py", core.PLATFORM_ROOT / "templates" / "gitops-app" / "scripts" / "render.py"):
         if render.is_file():
             block = render.read_text().split("ADDONS = {", 1)[-1]
@@ -562,8 +562,11 @@ def addon_env(app_root: Path, addon: str) -> list[str]:
     return []
 
 
-def provided_by_product(app_root: Path, repos: list[dict], repo_id: str) -> list[str]:
-    """Spec 052: what the plan's gitops entry wires for this repo (env, addons with their env, exposure)."""
+def provided_by_system(app_root: Path, repos: list[dict], repo_id: str) -> list[str]:
+    """Spec 052: what the plan's gitops entry wires for this repo (env, resources with their env, exposure).
+
+    An operation names its component with `component:` (5.0) or `service:` (plans written before), as plan.py accepts.
+    """
     lines = []
     for entry in repos:
         if entry.get("shape") != "gitops-app":
@@ -571,10 +574,11 @@ def provided_by_product(app_root: Path, repos: list[dict], repo_id: str) -> list
         for op in entry.get("gitops") or []:
             if not isinstance(op, dict):
                 continue
-            if op.get("uses") and op.get("service") == repo_id:
-                names = addon_env(app_root, op["uses"])
-                lines.append(f"- addon `{op['uses']}`" + (f": env {', '.join(f'`{n}`' for n in names)}" if names else ""))
-            elif isinstance(op.get("env"), dict) and op.get("service") == repo_id:
+            target = op.get("component") or op.get("service")
+            if op.get("uses") and target == repo_id:
+                names = resource_env(app_root, op["uses"])
+                lines.append(f"- resource `{op['uses']}`" + (f": env {', '.join(f'`{n}`' for n in names)}" if names else ""))
+            elif isinstance(op.get("env"), dict) and target == repo_id:
                 lines += [f"- env `{k}={v}`" for k, v in op["env"].items()]
             elif op.get("expose") == repo_id:
                 lines.append(f"- exposed through the Gateway at host `{op.get('host') or repo_id}`")
@@ -582,7 +586,7 @@ def provided_by_product(app_root: Path, repos: list[dict], repo_id: str) -> list
 
 
 def slice_from_plan(plan_path: Path, repo_id: str) -> dict:
-    """This repo's part of a product plan (ADR-026): title, priority, parent and the Product context section.
+    """This repo's part of a system plan (ADR-026): title, priority, parent and the System context section.
 
     The plan lives in the gitops-app repo (docs/plan/<spec_id>.md); its spec next to it in docs/specs/<spec_id>/.
     Plans written before ADR-026 have no `spec:`; their `arguments` prompt is then the whole context.
@@ -595,9 +599,9 @@ def slice_from_plan(plan_path: Path, repo_id: str) -> dict:
         ids = ", ".join(str(r.get("id")) for r in meta.get("repos") or [])
         raise PlatformError(f"plan {plan_path.name} has no repo '{repo_id}' (repos: {ids})")
     app_root = plan_path.resolve().parents[2]
-    parts = [f"Slice of the product plan `{meta.get('plan_id')}` in `{meta.get('gitops_app')}` for `{repo_id}` "
-             f"({repo.get('shape')}). The product criteria and the contract below are binding: every criterion of this "
-             "spec implements one of them and names it: `(product AC-<NNN>.<n>)`."]
+    parts = [f"Slice of the system plan `{meta.get('plan_id')}` in `{meta.get('gitops_app')}` for `{repo_id}` "
+             f"({repo.get('shape')}). The system criteria and the contract below are binding: every criterion of this "
+             "spec implements one of them and names it: `(system AC-<NNN>.<n>)`."]
     priority, problem = "P1", ""
     if meta.get("spec"):
         product = read(app_root / SPECS_DIR / str(meta["spec"]))
@@ -606,7 +610,7 @@ def slice_from_plan(plan_path: Path, repo_id: str) -> dict:
         wanted = set(repo.get("acs") or [])
         lines = [ln for ln in sections(product.body).get("acceptance criteria", "").splitlines()
                  if (m := AC_LINE.match(ln)) and m.group(2) in wanted and not m.group(1)]
-        parts.append("### Product criteria\n\n" + ("\n".join(lines) or "(none assigned)"))
+        parts.append("### System criteria\n\n" + ("\n".join(lines) or "(none assigned)"))
         design = product.dir / "design.md"
         contract = sections(design.read_text()).get("contract", "").strip() if design.is_file() else ""
     else:
@@ -614,9 +618,9 @@ def slice_from_plan(plan_path: Path, repo_id: str) -> dict:
     contract = contract or sections(body).get("contract", "").strip()
     if contract:
         parts.append("### Contract\n\n" + contract)
-    provided = provided_by_product(app_root, meta.get("repos") or [], repo_id)
+    provided = provided_by_system(app_root, meta.get("repos") or [], repo_id)
     if provided:
-        parts.append("### Provided by the product\n\nThe gitops part of this plan wires these for this repo; rely on them, "
+        parts.append("### Provided by the system\n\nThe gitops part of this plan wires these for this repo; rely on them, "
                      "do not ask for them again:\n\n" + "\n".join(provided))
     if repo.get("arguments"):
         parts.append("### Notes for this repo\n\n" + str(repo["arguments"]).strip())
@@ -628,7 +632,7 @@ def slice_from_plan(plan_path: Path, repo_id: str) -> dict:
 def new_from_plan(root: Path, plan_path: Path, repo_id: str, *, shape: str | None) -> Spec:
     sl = slice_from_plan(plan_path, repo_id)
     spec = new(root, sl["title"], shape=shape, priority=sl["priority"], tracks=[], parent=sl["parent"])
-    body = spec.body.replace("## Stories", f"## Product context\n\n{sl['context']}\n\n## Stories", 1)
+    body = spec.body.replace("## Stories", f"## System context\n\n{sl['context']}\n\n## Stories", 1)
     if sl["problem"]:
         body = re.sub(r"(## Problem\n\n)<!--.*?-->", lambda m: m.group(1) + sl["problem"], body, count=1, flags=re.S)
     save(spec.dir / "spec.md", spec.meta, body)
@@ -642,7 +646,7 @@ def approve(spec: Spec, shape: str | None) -> None:
     errs = check(trial, shape=shape)
     if errs:
         raise PlatformError(f"{spec.id} cannot be approved: " + "; ".join(errs),
-                            hint=f"fix the spec (`/svc:spec --amend {spec.number}`), then approve again")
+                            hint=f"fix the spec (`/component:spec --amend {spec.number}`), then approve again")
     spec.meta["status"] = "approved"
     save(spec.dir / "spec.md", spec.meta, add_changelog(spec.body, "approved"))
 
@@ -669,7 +673,7 @@ def set_status(spec: Spec, status: str, reason: str | None, *, unverified: bool 
         if result != "pass" and not unverified:
             why = "has no verification.md" if result is None else "verification.md does not say **Result:** pass"
             raise PlatformError(f"{spec.id} {why}; done means a reviewer checked every criterion",
-                                hint=f"run `/svc:verify {spec.number}` (or `--unverified --reason <why>` to record an exception)")
+                                hint=f"run `/component:verify {spec.number}` (or `--unverified --reason <why>` to record an exception)")
         if result != "pass":
             if not reason:
                 raise PlatformError("--unverified needs --reason: the exception is recorded in the spec's changelog")
@@ -734,19 +738,19 @@ def _set_done_in_text(text: str, task_id: str) -> str | None:
 # ---------------- list / index ----------------
 
 def next_step(spec: Spec) -> str:
-    """The command that moves this spec on. Product specs (gitops-app) use /app:*, with the plan in docs/plan/<id>.md."""
+    """The command that moves this spec on. Product specs (gitops-app) use /system:*, with the plan in docs/plan/<id>.md."""
     n = spec.number
     product = spec.meta.get("shape") == "gitops-app"
-    prefix = "/app" if product else "/svc"
+    prefix = "/system" if product else "/component"
     planned = (spec.dir.parents[2] / "docs" / "plan" / f"{spec.id}.md").is_file() if product else bool(spec.plan)
     if spec.status == "draft":
         return f"{prefix}:spec --amend {n}" if spec.open_questions() or not spec.active_acs() else f"{prefix}:spec approve {n}"
     if spec.status == "approved" and not planned:
         return f"{prefix}:plan {n}"
     if spec.status in {"approved", "building"}:
-        return f"{prefix}:build {n}"
+        return f"/system:ship {n}" if product else f"/component:build {n}"
     if spec.status == "done" and not product and verification_result(spec) != "pass":
-        return f"/svc:verify {n}"   # spec 068: done without evidence
+        return f"/component:verify {n}"   # spec 068: done without evidence
     return "—"
 
 
@@ -775,7 +779,7 @@ def index_table(root: Path) -> str:
         lines.append(f"| [{r['id']}]({Path('specs') / r['id'] / 'spec.md'}) — {r['title']} | {r['priority']} | "
                      f"{r['status']} | {r['acs']} | {tracks} |")
     if not rows:
-        lines.append("| (no specs yet: `/svc:spec <description>`) | | | | |")
+        lines.append("| (no specs yet: `/component:spec <description>`) | | | | |")
     return "\n".join(lines)
 
 
@@ -1085,7 +1089,7 @@ def main(argv: list[str]) -> int:
         if ns.json:
             print(json.dumps(rows, indent=2))
         elif not rows:
-            print("(no open specs — start one with `/svc:spec <description>`)")
+            print("(no open specs — start one with `/component:spec <description>`)")
         else:
             for r in rows:
                 tasks = f"{r['tasks_done']}/{r['tasks']} tasks" if r["tasks"] else "no plan"
