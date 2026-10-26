@@ -9,6 +9,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -133,7 +134,7 @@ def reset_sample(repo: str, rev: str, clone: Path, keep: dict | None = None) -> 
         raise RuntimeError(f"main of {repo} is not at {rev[:7]} after the reset")
 
 
-def _prepare(url: str, rev: str, task: dict, clone: Path) -> None:
+def _prepare(url: str, rev: str, task: dict, clone: Path, spec: bool = True) -> None:
     """Clone once, then reuse the folder (its trust stays): back to `rev` with no local branches and no untracked files."""
     clone.parent.mkdir(parents=True, exist_ok=True)
     if not (clone / ".git").exists():
@@ -145,12 +146,68 @@ def _prepare(url: str, rev: str, task: dict, clone: Path) -> None:
         if branch != "main":
             _ok(["git", "branch", "-D", branch], clone)
     _ok(["git", "clean", "-ffdx", "-e", ".devbox", "-e", ".venv"], clone)
+    if spec:
+        commit_spec(task, clone)
+
+
+def commit_spec(task: dict, clone: Path) -> None:
+    """The workflow's spec as a local commit (build, ship). With an arm it comes after the arm's commit, which alone goes to main."""
     if task.get("spec_file"):
         target = clone / "docs" / "specs" / task["spec_id"] / "spec.md"
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(BENCH_DIR / task["spec_file"], target)
         _ok(["git", "add", "docs/specs"], clone)
         _ok(["git", *GIT_IDENTITY, "commit", "-m", f"docs(spec): {task['spec_id']} (benchmark)"], clone)
+
+
+def load_arm(name: str, workflow: str) -> dict:
+    """The arm `name` from benchmark/arms/ (spec 107), checked against the workflow. Raises PlatformError."""
+    path = BENCH_DIR / "arms" / f"{name}.json"
+    try:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name):
+            raise ValueError("not a valid arm name")
+        arm = json.loads(path.read_text())
+    except (OSError, ValueError):
+        known = sorted(p.stem for p in (BENCH_DIR / "arms").glob("*.json"))
+        raise PlatformError(f"unknown benchmark arm '{name}'", hint="arms: " + (", ".join(known) or "none")) from None
+    if not isinstance(arm, dict) or workflow not in (arm.get("workflows") or []):
+        raise PlatformError(f"benchmark arm '{name}' does not list the workflow {workflow}",
+                            hint="workflows: " + ", ".join(arm.get("workflows") or []) if isinstance(arm, dict) else None)
+    return arm
+
+
+def stage_arm(arm: dict, clone: Path) -> None:
+    """Write the arm's files, run its commands in the clone and commit `bench: arm <name>` locally (nothing leaves the machine).
+    Raises RuntimeError naming the failing command."""
+    for rel, content in (arm.get("files") or {}).items():
+        target = (clone / rel).resolve()
+        if clone.resolve() not in target.parents:
+            raise RuntimeError(f"arm {arm['name']}: file {rel} is outside the clone")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content)   # verbatim: no local path ever reaches the (public) sample repo
+    for cmd in arm.get("commands") or []:
+        code, out, err = run(cmd, clone)
+        if code != 0:
+            raise RuntimeError(f"arm {arm['name']}: `{' '.join(str(c) for c in cmd[:4])}` failed: {_why(out, err)}")
+    _ok(["git", "add", "-A"], clone)
+    _ok(["git", *GIT_IDENTITY, "commit", "--allow-empty", "-m", f"bench: arm {arm['name']}"], clone)
+
+
+def push_arm(url: str, clone: Path) -> None:
+    """Push the arm commit (not forced) to main. The reset after the run puts main back."""
+    _ok(["git", "push", url, "HEAD:refs/heads/main"], clone)
+
+
+SUITE = ["bash", "-c", "SMOKE_BASE_URL= uv run python -m pytest tests/ -p scripts.smoke_pytest -q --tb=line"]
+
+
+def recall_check(clone: Path) -> str | None:
+    """`--recall` (spec 107): the full suite in the clone after the session. None when green, else why the arm's selection missed a failure."""
+    code, out, err = run(SUITE, clone)
+    if code == 0:
+        return None
+    failed = [ln.split()[1] for ln in out.splitlines() if ln.startswith("FAILED ") and len(ln.split()) > 1]
+    return ("recall: the full suite fails on " + ", ".join(failed) if failed else f"recall: the full suite failed: {_why(out, err)}")[:300]
 
 
 def _run_headless(argv: list[str], rid: str | None, platform: Path | None = None) -> str:
@@ -269,7 +326,11 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--plugins", metavar="DIR", help="run with the plugins in DIR (this worktree's plugins/) instead of the installed ones")
     ap.add_argument("--compare-validation", action="store_true",
                     help="run the task twice, change-aware validation on and then off (CPLAT_VALIDATION=full), and compare (spec 103)")
+    ap.add_argument("--arm", metavar="NAME", help="apply benchmark/arms/NAME.json to the sample repo before the session (spec 107)")
+    ap.add_argument("--recall", action="store_true",
+                    help="after the session run the full suite in the clone; a failing test fails the record (spec 107)")
     ns = ap.parse_args(argv)
+    arm = load_arm(ns.arm, ns.workflow) if ns.arm else None
     tasks = json.loads((BENCH_DIR / "tasks.json").read_text())
     repo, rev = tasks["sample"]["repo"], tasks["sample"]["rev"]
     task = tasks["workflows"][ns.workflow]
@@ -283,7 +344,9 @@ def main(argv: list[str]) -> int:
                             hint=f"cplat runs benchmark {ns.workflow} --reset-first")
     clone = runs.state_dir() / "benchmark" / ns.workflow
     try:
-        _prepare(url, rev, task, clone)
+        _prepare(url, rev, task, clone, spec=arm is None)
+        if arm:
+            stage_arm(arm, clone)
         if not trusted(clone):
             raise PlatformError(f"the benchmark folder {clone} is not trusted in Claude Code, so its permission rules would be ignored",
                                 hint=f"cd {clone} && claude   (accept the trust dialog, then /exit), and run the benchmark again")
@@ -303,6 +366,13 @@ def main(argv: list[str]) -> int:
     outcome, reset, note, check = "failed", "not run", None, None
     usage, compare = None, None
     try:
+        if arm:   # after every refusal above, so the reset below always removes it; then the spec commit on top of it
+            try:
+                push_arm(url, clone)
+                commit_spec(task, clone)
+            except RuntimeError as e:
+                raise PlatformError(f"arm {ns.arm} could not be applied to {repo}: {e}") from None
+
         def one_pass(suffix: str = "") -> tuple[str, str | None]:
             out, why = "failed", None
             for name, prompt in steps(task):   # e.g. build: plan, then build; each its own phase, a failed step stops the run
@@ -312,7 +382,12 @@ def main(argv: list[str]) -> int:
                 if out != "done":
                     return out, f"step {name} did not finish"
             missing = result(ns.workflow, repo, keep)
-            return ("failed", missing) if missing else (out, why)
+            if missing:
+                return "failed", missing
+            if ns.recall and out == "done":   # spec 107: the full suite after the session, in every pass
+                why = recall_check(clone)
+                out = "failed" if why else out
+            return out, why
 
         if not ns.compare_validation:
             outcome, check = one_pass()
@@ -321,7 +396,11 @@ def main(argv: list[str]) -> int:
             for label, mode in (("selective", None), ("full", "full")):
                 if label == "full":   # the sample repo back to the pinned state for the second pass
                     reset_sample(repo, rev, clone, keep)
-                    _prepare(url, rev, task, clone)
+                    _prepare(url, rev, task, clone, spec=arm is None)
+                    if arm:   # the second pass runs with the same arm
+                        stage_arm(arm, clone)
+                        push_arm(url, clone)
+                        commit_spec(task, clone)
                 saved = os.environ.get("CPLAT_VALIDATION")
                 if mode:
                     os.environ["CPLAT_VALIDATION"] = mode
@@ -358,7 +437,7 @@ def main(argv: list[str]) -> int:
             pass
         runs.finish(rid, outcome, fields={"benchmark": {
             "workflow": ns.workflow, "task_version": task["task_version"], "sample_repo": repo, "sample_rev": rev,
-            "reset": reset, "reset_note": note, "result_check": check,
+            "reset": reset, "reset_note": note, "result_check": check, "arm": ns.arm or "baseline",
             "plugins": plugin_info, "coordinator_model": model,
             **({"validation_compare": compare} if compare else {})}})
     if reset == "failed":
