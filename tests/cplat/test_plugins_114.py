@@ -24,6 +24,7 @@ WORKING = {
     "component": ["new", "add", "set", "remove", "spec", "plan", "build", "verify", "check", "ship", "fix", "release"],
     "api": ["list"], "resource": ["add", "remove"], "instance": ["promote", "secret", "verify"], "issue": ["triage", "report"],
     "platform": ["doctor", "update", "fleet", "runs", "retro", "ui"],
+    "cluster": ["new", "add", "remove"],   # spec 125 adds the cluster noun after 5.0
 }
 # the 27 slash commands of 4.7 and the new command each one names (AC-114.65 gives the special targets)
 OLD_TO_NEW = {
@@ -77,7 +78,7 @@ def test_exactly_the_32_working_commands_exist_ac_114_59():  # AC-114.59  (spec 
             if "moved-to" not in fm:
                 found.setdefault(plugin, []).append(f.stem)
     assert {k: sorted(v) for k, v in found.items()} == {k: sorted(v) for k, v in WORKING.items()}
-    assert sum(len(v) for v in found.values()) == 32
+    assert sum(len(v) for v in found.values()) == 35   # 32 (5.0 plus /platform:ui and /system:set), plus /cluster:new|add|remove (spec 125)
     assert not (PLUGINS / "api" / "commands" / "check.md").exists()
 
 

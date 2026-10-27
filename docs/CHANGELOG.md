@@ -6,6 +6,12 @@ Format: each section lists changes for a tagged release. Plugin and template ver
 
 ## [Unreleased]
 
+**A cluster repo hosts several systems.** [ADR-060](adr/060-a-cluster-repo-owns-shared-services.md), spec 125. Not breaking: a system repo renders as before. The new shape `cluster-gitops` is a repo for one cluster: `cluster.yaml` lists the shared operators, the secret store and the systems (`cluster/systems/<system>.yaml`, one Argo CD application each). A system with `operators: owner` in every environment leaves its operators to the cluster, and a CI check names any operator or release a system still needs. The versions table pins `external-secrets` 2.12.0 and `kyverno` 3.9.1.
+
+**Plugins:** new `cluster` 1.0.0 (`/cluster:new <name>`, `/cluster:add <owner>/<repo>`, `/cluster:remove <system>`).
+
+**Action** for shared clusters, once per cluster: create the cluster repo and move the cluster to it as described in [CLUSTERS.md](CLUSTERS.md). Nothing is reinstalled. Clusters with one system need nothing.
+
 ## [5.1.0] — 2026-10-27
 
 **A local console shows the system, its process and what needs you.** Spec 122, [ADR-055](adr/055-local-console-over-cplat-json.md), [guide](console.md). `/platform:ui` (`cplat ui`) serves a browser console on `127.0.0.1` with three places: Inbox (decisions waiting for you), Board (every item by stage) and System (components by environment). Actions run as `cplat headless` in the local clone; the console never writes to git, GitHub or the cluster itself.
