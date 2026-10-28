@@ -46,6 +46,11 @@
 #                        All three are installed like CloudNativePG: from operators/root.yaml with Argo CD, k3s HelmCharts with WITH_ARGO=0.
 #   NACK_VERSION         NACK (NATS JetStream controller) chart version (default: the targetRevision of operators/apps/nack.yaml, else 0.35.0)
 #   WITH_NACK            1 = NACK, 0 = never; default: 1 exactly when operators/apps/nack.yaml exists. Installed like CloudNativePG.
+#   KEDA_VERSION         KEDA chart version (default: the targetRevision of operators/apps/keda.yaml, else 2.19.0)
+#   WITH_KEDA            1 = KEDA, 0 = never; default: 1 exactly when operators/apps/keda.yaml exists. Installed like CloudNativePG.
+#   METRICS_SERVER_VERSION  metrics-server chart version (default: the targetRevision of operators/apps/metrics-server.yaml, else 3.14.0)
+#   WITH_METRICS_SERVER  1 = the pinned metrics-server, 0 = never; default: 1 exactly when operators/apps/metrics-server.yaml exists.
+#                        With 1, a new cluster is created without k3s' bundled metrics-server.
 #   REGISTRY_PORT        also create a local image registry reachable as localhost:<port> from the host and as
 #                        k3d-<cluster>-registry:<port> from the cluster
 # Re-running `up` is safe; it re-applies credentials and the root Application.
@@ -130,6 +135,12 @@ velero_aws_plugin_image="${VELERO_AWS_PLUGIN_IMAGE:-velero/velero-plugin-for-aws
 nack_file=operators/apps/nack.yaml
 nack_version="${NACK_VERSION:-$(rev_of "$nack_file" 0.35.0)}"
 with_nack="${WITH_NACK:-auto}"
+keda_file=operators/apps/keda.yaml
+keda_version="${KEDA_VERSION:-$(rev_of "$keda_file" 2.19.0)}"
+with_keda="${WITH_KEDA:-auto}"
+metrics_file=operators/apps/metrics-server.yaml
+metrics_version="${METRICS_SERVER_VERSION:-$(rev_of "$metrics_file" 3.14.0)}"
+with_metrics="${WITH_METRICS_SERVER:-auto}"
 with_barman="${WITH_BARMAN_CLOUD:-auto}"
 with_velero="${WITH_VELERO:-auto}"
 if [ "$with_barman" = auto ]; then
@@ -141,9 +152,32 @@ fi
 if [ "$with_nack" = auto ]; then
   if [ -f "$nack_file" ]; then with_nack=1; else with_nack=0; fi
 fi
+if [ "$with_keda" = auto ]; then
+  if [ -f "$keda_file" ]; then with_keda=1; else with_keda=0; fi
+fi
+if [ "$with_metrics" = auto ]; then
+  if [ -f "$metrics_file" ]; then with_metrics=1; else with_metrics=0; fi
+fi
 registry="${name}-registry"
 org=$(sed -n 's/^github_org:[[:space:]]*//p' .copier-answers.yml | head -1)
 k() { kubectl --context "$ctx" "$@"; }
+wait_keda_deployments() {   # keda-operator, keda-operator-metrics-apiserver, keda-admission-webhooks (chart 2.19.0), each bounded
+  local d
+  for d in keda-operator keda-operator-metrics-apiserver keda-admission-webhooks; do
+    for _ in $(seq 1 100); do k -n keda get "deploy/$d" >/dev/null 2>&1 && break; sleep 3; done
+  done
+  k -n keda rollout status deploy/keda-operator --timeout=300s >/dev/null
+  k -n keda rollout status deploy/keda-operator-metrics-apiserver --timeout=300s >/dev/null
+  k -n keda rollout status deploy/keda-admission-webhooks --timeout=300s >/dev/null
+}
+wait_resource_metrics() {   # cpu and memory scaling need metrics.k8s.io; warn, never fail
+  local i
+  for i in $(seq 1 40); do
+    [ "$(k get apiservices.apiregistration.k8s.io/v1beta1.metrics.k8s.io -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)" = True ] && return 0
+    sleep 3
+  done
+  echo "WARNING: the cluster serves no resource metrics yet (v1beta1.metrics.k8s.io is not Available); cpu and memory triggers cannot scale until it is"
+}
 
 case "${1:-up}" in
   down)
@@ -183,12 +217,16 @@ case "${1:-up}" in
     fi
     if k3d cluster list "$name" >/dev/null 2>&1; then
       echo "Cluster $name exists - reusing it"
+      if [ "$with_metrics" = 1 ]; then echo "Note: a reused cluster keeps its resource-metrics source; recreate it (cluster-down, cluster-up) to switch to the pinned metrics-server"; fi
       k3d cluster start "$name" >/dev/null 2>&1 || true
     else
       create_args=(--image "$k3s_image" -p "${port}:80@loadbalancer" --wait)
       if [ -n "$registry_port" ]; then
         k3d registry list "k3d-${registry}" >/dev/null 2>&1 || k3d registry create "$registry" --port "$registry_port" >/dev/null
         create_args+=(--registry-use "k3d-${registry}:${registry_port}")
+      fi
+      if [ "$with_metrics" = 1 ]; then   # WITH_METRICS_SERVER=1: one metrics source, the pinned metrics-server, not k3s' bundled one
+        create_args+=(--k3s-arg "--disable=metrics-server@server:*")
       fi
       k3d cluster create "$name" "${create_args[@]}"
     fi
@@ -440,7 +478,10 @@ YAML
       k -n velero rollout status daemonset/node-agent --timeout=300s >/dev/null
     fi
 
-    if [ "$with_nack" = 1 ] && [ "$with_argo" = 1 ]; then
+    if [ "$with_nack" = 1 ] && [ "$with_argo" = 1 ] && [ ! -f "$nack_file" ]; then
+      echo "WARNING: WITH_NACK=1 with Argo CD, but NACK comes from $nack_file and it does not exist; render a NATS broker first, or use WITH_ARGO=0. Skipping the NACK wait." >&2
+      with_nack=0
+    elif [ "$with_nack" = 1 ] && [ "$with_argo" = 1 ]; then
       : # Argo CD installs NACK from operators/root.yaml (applied below, before bootstrap/)
     elif [ "$with_nack" = 1 ]; then
       echo "Installing NACK ($nack_version)"
@@ -461,6 +502,48 @@ YAML
       for _ in $(seq 1 60); do k get crd streams.jetstream.nats.io >/dev/null 2>&1 && break; sleep 3; done
       for _ in $(seq 1 100); do [ -n "$(k -n nack get deploy -l app=nack -o name 2>/dev/null)" ] && break; sleep 3; done
       k -n nack rollout status deploy -l app=nack --timeout=300s >/dev/null
+    fi
+
+    if [ "$with_keda" = 1 ] && [ "$with_argo" = 1 ] && [ ! -f "$keda_file" ]; then
+      echo "WARNING: WITH_KEDA=1 with Argo CD, but KEDA comes from $keda_file and it does not exist; render a queue-triggered instance first, or use WITH_ARGO=0. Skipping the KEDA wait." >&2
+      with_keda=0
+    elif [ "$with_keda" = 1 ] && [ "$with_argo" = 1 ]; then
+      : # Argo CD installs KEDA from operators/root.yaml (applied below, before bootstrap/)
+    elif [ "$with_keda" = 1 ]; then
+      echo "Installing KEDA ($keda_version)"
+      k apply -f - >/dev/null <<YAML
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: keda
+  namespace: kube-system
+spec:
+  repo: https://kedacore.github.io/charts
+  chart: keda
+  version: ${keda_version}
+  targetNamespace: keda
+  createNamespace: true
+YAML
+      for _ in $(seq 1 60); do k get crd scaledobjects.keda.sh >/dev/null 2>&1 && break; sleep 3; done
+      wait_keda_deployments
+    fi
+
+    if [ "$with_metrics" = 1 ] && [ "$with_argo" = 1 ]; then
+      : # Argo CD installs metrics-server from operators/root.yaml (applied below, before bootstrap/)
+    elif [ "$with_metrics" = 1 ]; then
+      echo "Installing metrics-server ($metrics_version)"
+      k apply -f - >/dev/null <<YAML
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: metrics-server
+  namespace: kube-system
+spec:
+  repo: https://kubernetes-sigs.github.io/metrics-server
+  chart: metrics-server
+  version: ${metrics_version}
+  targetNamespace: kube-system
+YAML
     fi
 
     if [ "$with_lgtm" = 1 ]; then
@@ -567,7 +650,7 @@ YAML
     if [ -n "$urls" ]; then urls="${urls}"$'\n'; fi   # command substitution strips the trailing newline
 
     if [ "$with_argo" = 1 ]; then
-      if { [ "$with_cnpg" = 1 ] || [ "$with_seaweedfs" = 1 ] || [ "$with_barman" = 1 ] || [ "$with_velero" = 1 ] || [ "$with_nack" = 1 ]; } && [ -f operators/root.yaml ]; then
+      if { [ "$with_cnpg" = 1 ] || [ "$with_seaweedfs" = 1 ] || [ "$with_barman" = 1 ] || [ "$with_velero" = 1 ] || [ "$with_nack" = 1 ] || [ "$with_keda" = 1 ] || [ "$with_metrics" = 1 ]; } && [ -f operators/root.yaml ]; then
         legacy=0
         if [ "$with_cnpg" = 1 ] && k -n kube-system get helmchart cnpg >/dev/null 2>&1; then
           echo "CloudNativePG was installed by an older cluster-up (HelmChart kube-system/cnpg); keeping it. Recreate the cluster to let Argo CD manage it"
@@ -611,7 +694,15 @@ YAML
             for _ in $(seq 1 100); do k -n nack get deploy/nack >/dev/null 2>&1 && break; sleep 3; done
             k -n nack rollout status deploy/nack --timeout=300s >/dev/null
           fi
+          if [ "$with_keda" = 1 ]; then
+            for _ in $(seq 1 200); do k get crd scaledobjects.keda.sh >/dev/null 2>&1 && break; sleep 3; done
+            wait_keda_deployments
+          fi
         fi
+      fi
+      if [ "$with_system" != 0 ]; then
+        echo "Waiting for resource metrics (v1beta1.metrics.k8s.io, up to 120 s)"
+        wait_resource_metrics
       fi
       echo "Applying the root Application"
       k apply -n argocd -f bootstrap/
@@ -625,6 +716,10 @@ Inspect it:     devbox run cluster-ui   (k9s)
 Remove it:      devbox run cluster-down
 MSG
     else
+      if [ "$with_system" != 0 ]; then
+        echo "Waiting for resource metrics (v1beta1.metrics.k8s.io, up to 120 s)"
+        wait_resource_metrics
+      fi
       echo "Cluster ${ctx} is ready (Gateway API only, no ArgoCD)."
       if [ -n "$registry_port" ]; then echo "Registry: push to localhost:${registry_port}/<image>; pods pull k3d-${registry}:${registry_port}/<image>"; fi
     fi

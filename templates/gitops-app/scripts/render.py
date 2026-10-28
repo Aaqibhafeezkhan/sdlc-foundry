@@ -76,6 +76,13 @@ system.yaml (every value explicit and reviewable; the model is described in docs
         dev: {}
         staging: {promote: manual}
         prod: {replicas: 2, env: {LOG_LEVEL: WARN}}    # replicas, resources, env (merged), promote, secrets (replace declared fields by name)
+      # scale (spec 120): on the component (default for every instance) or on an instance; excludes `replicas` on the same level.
+      #   scale: {min: 2, max: 10, on: {cpu: 70}}                          # HPA on CPU utilisation percent (needs resources.requests.cpu)
+      #   scale: {max: 6, on: {memory: 80}}                                # HPA on memory utilisation percent; min defaults to 1
+      #   scale: {min: 0, max: 8, on: {consumes: orders, lag: 50}}         # KEDA on a broker's events API queue; min 0 = scale to zero
+      #   scale: {max: 5, on: {cache: sessions, list: jobs, length: 20}}   # KEDA on a Redis/Valkey list length
+      #   min and max are whole numbers, 1..20 (at most 20 replicas); min <= max; min: 0 only with a queue trigger (consumes, cache).
+      #   cpu/memory need a metrics server: answer resource_metrics (provided | install) in .copier-answers.yml; install renders it.
     todo-lib: {type: library, lang: python, repo: org/todo-lib}    # a library has no instances and renders nothing
   apis:
     todo-api-rest: {type: openapi}   # openapi | grpc | graphql | events; changes no manifest
@@ -149,7 +156,8 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 ENVS = ["dev", "staging", "prod"]
 NOT_MIGRATED = "not migrated to 5.0: run `cplat platform update --migrate`"
-MANAGED_FILES = {"deployment.yaml", "service.yaml", "httproute.yaml", "kustomization.yaml", "password-generator.yaml", "application.yaml"}
+MANAGED_FILES = {"deployment.yaml", "service.yaml", "httproute.yaml", "kustomization.yaml", "password-generator.yaml", "application.yaml",
+                 "hpa.yaml", "scaledobject.yaml", "triggerauthentication.yaml"}
 MANAGED_PREFIXES = ("externalsecret-",)
 TOP_KEYS = ["system", "owner", "environments", "components", "apis", "resources", "gateway", "secretStore", "registries", "autonomy"]
 ENV_KEYS = ["host", "url", "policy", "promote", "observability", "operators", "backup", "autonomy"]
@@ -159,11 +167,16 @@ VALID_PAIRS = [("service", "python"), ("service", "java"), ("service", "go"), ("
 PAIR_TEXT = ", ".join(f"{t}/{lang}" for t, lang in VALID_PAIRS if lang != "unknown")
 COMMON_KEYS = ["type", "lang", "repo"]
 SERVICE_KEYS = [*COMMON_KEYS, "image", "port", "probes", "user", "volumes", "env", "secretRefs", "secrets", "replicas", "resources",
-                "expose", "metrics", "provides", "consumes", "uses", "instances"]
+                "expose", "metrics", "provides", "consumes", "uses", "instances", "scale"]
 # Keys an external component may carry: its package owns ports, probes, secrets and exposure (spec 069).
 EXTERNAL_KEYS = [*COMMON_KEYS, "image", "external", "provides", "consumes", "instances"]
 LIBRARY_KEYS = [*COMMON_KEYS, "provides", "consumes"]
-INSTANCE_KEYS = ["replicas", "resources", "env", "promote", "secrets", "autonomy"]
+INSTANCE_KEYS = ["replicas", "resources", "env", "promote", "secrets", "autonomy", "scale"]
+SCALE_KEYS = ["min", "max", "on"]
+SCALE_MAX = 20
+ON_FORMS = "{cpu: <percent>}, {memory: <percent>}, {consumes: <api>, lag: <n>} or {cache: <resource>, list: <key>, length: <n>}"
+TRIGGER_FORMS = {"cpu": ["cpu"], "memory": ["memory"], "consumes": ["consumes", "lag"], "cache": ["cache", "list", "length"]}
+REQUEST_API_TYPES = ("openapi", "grpc", "graphql")
 RESOURCE_TYPES = ("database", "bucket", "cache", "broker")
 PLANNED_TYPES: dict[str, int] = {}     # types no release runs yet: the spec that brings each (none since spec 119)
 RESOURCE_KEYS = ["type", "external", "remote", "version", "replicas", "storage", "resources", "instances"]
@@ -273,6 +286,13 @@ OPERATORS = {
     "nack": {"repo_url": "https://nats-io.github.io/k8s/helm/charts", "chart": "nack", "chart_version": "0.35.0",
              "operator_version": "0.24.0", "namespace": "nack", "release": "nack", "crd": "streams.jetstream.nats.io",
              "selector": "app=nack"},   # the chart's useLegacyNames (default true) labels the Deployment app: <release>
+    # Spec 120: KEDA scales queue-triggered instances; metrics-server serves cpu/memory to the HPA when the cluster lacks one.
+    "keda": {"repo_url": "https://kedacore.github.io/charts", "chart": "keda", "chart_version": "2.19.0",
+             "operator_version": "2.19.0", "namespace": "keda", "release": "keda", "crd": "scaledobjects.keda.sh",
+             "selector": "app.kubernetes.io/name=keda-operator"},   # the chart names the Deployment keda-operator; the default label would match nothing
+    "metrics-server": {"repo_url": "https://kubernetes-sigs.github.io/metrics-server", "chart": "metrics-server",
+                       "chart_version": "3.14.0", "operator_version": "0.9.0", "namespace": "kube-system",
+                       "release": "metrics-server", "crd": None, "selector": "app.kubernetes.io/name=metrics-server"},
 }
 OPERATOR_RETRY = {"limit": 10, "backoff": {"duration": "30s", "factor": 2, "maxDuration": "10m"}}
 OPERATOR_OF_TYPE = {"database": "cloudnative-pg", "bucket": "seaweedfs", "broker": "nack"}
@@ -673,7 +693,71 @@ def str_list(label: str, key: str, value) -> list[str]:
     return value
 
 
-def validate_instances(c: str, spec: dict, external: bool) -> dict:
+def is_int(v) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def yaml_text(v) -> str:
+    return yaml.safe_dump(v, default_flow_style=True).strip().removesuffix("\n...").removesuffix("...").strip()
+
+
+def scale_on_keys(doc: dict) -> None:
+    """YAML 1.1 reads an unquoted `on:` as the boolean true; inside a `scale` mapping that key is `on` (as `off` is for a policy)."""
+    comps = doc.get("components")
+    for c in (comps.values() if isinstance(comps, dict) else []):      # a malformed tree fails later with 114's own message
+        if not isinstance(c, dict):
+            continue
+        insts = c.get("instances")
+        for holder in [c, *[i for i in (insts.values() if isinstance(insts, dict) else []) if isinstance(i, dict)]]:
+            s = holder.get("scale")
+            if isinstance(s, dict) and True in s and "on" not in s:
+                holder["scale"] = {("on" if k is True else k): v for k, v in s.items()}
+
+
+def check_scale(at: str, scale) -> dict:
+    """One `scale` mapping (design.md, Render errors); returns {min, max, trigger, on}."""
+    where = f"{at}.scale"
+    if not isinstance(scale, dict):
+        fail(f"{where} must be a mapping with min, max and on, e.g. {{min: 1, max: 5, on: {{cpu: 70}}}}")
+    for k in scale:
+        if k not in SCALE_KEYS:
+            fail(f"{where}: unknown key '{k}' (allowed: {', '.join(SCALE_KEYS)})")
+    if "max" not in scale:
+        fail(f"{where}: max is required: an integer from 1 to {SCALE_MAX}")
+    mx = scale["max"]
+    if not is_int(mx) or not 1 <= mx <= SCALE_MAX:
+        fail(f"{where}.max must be an integer from 1 to {SCALE_MAX}, got {mx}")
+    mn = scale.get("min", 1)
+    if not is_int(mn) or not 0 <= mn <= mx:
+        fail(f"{where}.min must be an integer from 0 to max ({mx}), got {mn}")
+    if "on" not in scale:
+        fail(f"{where}.on is required: exactly one of {ON_FORMS}")
+    on = scale["on"]
+    keys = list(on) if isinstance(on, dict) else None
+    trigger = next((t for t, form in TRIGGER_FORMS.items() if keys is not None and set(keys) == set(form)), None)
+    if trigger is None:
+        got = "{" + ", ".join(str(k) for k in keys) + "}" if keys is not None else yaml_text(on)
+        fail(f"{where}.on must be exactly one of {ON_FORMS}, got {got}")
+    if trigger in ("cpu", "memory"):
+        v = on[trigger]
+        if not is_int(v) or not 1 <= v <= 100:
+            fail(f"{where}.on.{trigger} must be an integer from 1 to 100 (percent of the {'CPU' if trigger == 'cpu' else 'memory'} request), got {v}")
+    if trigger == "consumes" and (not is_int(on["lag"]) or on["lag"] < 1):
+        fail(f"{where}.on.lag must be an integer of at least 1, got {on['lag']}")
+    if trigger == "cache":
+        if not isinstance(on["list"], str) or not on["list"]:
+            fail(f"{where}.on.list must be a non-empty string: the key of the list in the cache, got {on['list']}")
+        if not is_int(on["length"]) or on["length"] < 1:
+            fail(f"{where}.on.length must be an integer of at least 1, got {on['length']}")
+    if mn == 0 and trigger in ("cpu", "memory"):
+        fail(f"{where}: scale to zero (min: 0) needs a queue trigger (consumes or cache); a {trigger} trigger has nothing to measure at zero replicas")
+    return {"min": mn, "max": mx, "trigger": trigger, "on": dict(on)}
+
+
+EXCLUSIVE = "scale and replicas exclude each other; remove one (replicas is a fixed number, scale lets the autoscaler choose between min and max)"
+
+
+def validate_instances(c: str, spec: dict, external: bool, comp_scale: dict | None = None) -> dict:
     """The effective settings of every instance: {env: {replicas, resources, env, secrets}}; keys = where the component runs."""
     inst = spec.get("instances")
     if inst is None:
@@ -706,7 +790,15 @@ def validate_instances(c: str, spec: dict, external: bool) -> dict:
         if external:
             out[e] = eff
             continue
-        replicas = i.get("replicas", spec.get("replicas"))
+        scale = None
+        if "scale" in i:
+            if "replicas" in i:
+                fail(f"{label}: {EXCLUSIVE}")
+            scale = {**check_scale(label, i["scale"]), "source": "instance"}
+        elif "replicas" not in i and comp_scale is not None:
+            scale = {**comp_scale, "source": "component"}
+        eff["scale"] = scale
+        replicas = None if scale is not None else i.get("replicas", spec.get("replicas"))
         if replicas is not None:
             if isinstance(replicas, bool) or not isinstance(replicas, int):
                 fail(f"{label}.replicas must be a number")
@@ -796,7 +888,12 @@ def validate_component(app_dir: Path, c: str, spec) -> dict:
     for k in ("port", "probes", "user", "volumes", "secretRefs", "expose", "metrics", "external"):
         if k in spec:
             svc[k] = spec[k]
-    eff = validate_instances(c, spec, external)
+    comp_scale = None
+    if not external and "scale" in spec:
+        if "replicas" in spec:
+            fail(f"components.{c}: {EXCLUSIVE}")
+        comp_scale = check_scale(f"components.{c}", spec["scale"])
+    eff = validate_instances(c, spec, external, comp_scale)
     svc["environments"] = list(eff)
     svc["_eff"] = eff
     if external:
@@ -1211,6 +1308,72 @@ def validate_uses(comps: list[dict], resources: dict, events: dict | None = None
             validate_env_vars(f"components.{s['name']}", {k: v for k, v in (eff.get("env") or {}).items() if k in BROKER_ENV_NAMES}, defer=False)
 
 
+def check_scale_refs(where: str, c: dict, mn: int, on: dict, apis: dict, resources: dict, events: dict) -> None:
+    """The reference checks of one declared `scale` (design.md, Reference and effective checks)."""
+    name = c["name"]
+    if "consumes" in on:
+        api = on["consumes"]
+        if api not in c["consumes"]:
+            fail(f"{where}.on.consumes: {name} does not consume '{api}' (consumes: {names_list(c['consumes'])})")
+        typ = (apis.get(api) or {}).get("type")
+        if typ != "events":
+            fail(f"{where}.on.consumes: '{api}' is a {typ} API; only an events API carried by a broker has a queue to scale on")
+        if events.get(api, {}).get("broker") is None:
+            fail(f"{where}.on.consumes: the events API '{api}' is carried by no broker; add one with /resource:add <name> --type broker")
+    if "cache" in on:
+        r = on["cache"]
+        if r not in resources or resources[r]["type"] != "cache":
+            caches = [x for x, rc in resources.items() if rc["type"] == "cache"]
+            fail(f"{where}.on.cache: '{r}' is not a cache resource of the system (caches: {names_list(caches)})")
+        if r not in (c.get("uses") or []):
+            fail(f"{where}.on.cache: {name} does not use the cache '{r}'; add it to components.{name}.uses")
+    if mn == 0:
+        what = []
+        if c.get("expose"):
+            expose = c["expose"]
+            host = (expose.get("host") if isinstance(expose, dict) else None) or name
+            what.append(f"exposed at host {host}")
+        requests = [f"{a} ({apis[a]['type']})" for a in c["provides"] if apis.get(a, {}).get("type") in REQUEST_API_TYPES]
+        if requests:
+            what.append("provides " + ", ".join(requests))
+        if what:
+            fail(f"{where}: min 0 is not possible for {name}: an instance at zero replicas cannot answer requests ({'; '.join(what)})")
+
+
+def validate_scaling(comps: list[dict], comps_doc: dict, apis: dict, resources: dict, events: dict) -> None:
+    for c in comps:
+        if c["type"] == "library" or "external" in c:
+            continue
+        name = c["name"]
+        spec = {str(k): v for k, v in comps_doc.items()}[name]
+        declared = [(f"components.{name}.scale", spec["scale"])] if "scale" in spec else []
+        for e, i in (spec.get("instances") or {}).items():
+            if isinstance(i, dict) and "scale" in i:
+                declared.append((f"components.{name}.instances.{e}.scale", i["scale"]))
+        for where, raw in declared:
+            check_scale_refs(where, c, raw.get("min", 1), raw["on"], apis, resources, events)
+        for e in ENVS:
+            scale = c["_eff"].get(e, {}).get("scale")
+            if scale is None:
+                continue
+            label = f"components.{name}.instances.{e}"
+            if scale["trigger"] in ("cpu", "memory"):
+                if not ((c["_eff"][e].get("resources") or {}).get("requests") or {}).get(scale["trigger"]):
+                    what = "a CPU request" if scale["trigger"] == "cpu" else "a memory request"
+                    fail(f"{label}: scale on {scale['trigger']} needs {what}; set resources.requests.{scale['trigger']} on components.{name} or on this instance")
+            elif scale["trigger"] == "consumes":
+                api = scale["on"]["consumes"]
+                broker_name = events[api]["broker"]
+                if resources[broker_name]["envs"][e]["external"]:
+                    fail(f"{label}: scale on consumes '{api}' needs the broker {broker_name} in the cluster, but it is external in {e}; "
+                         f"the platform cannot read the queue depth of an external broker")
+
+
+def scaled_instances(services: list[dict], env: str) -> list[str]:
+    """The non-external components running in `env` with an effective scale, in `components:` order."""
+    return [s["name"] for s in services if "external" not in s and env in s["environments"] and s["_eff"][env].get("scale")]
+
+
 def check_cron(where: str, value) -> None:
     fields = value.split() if isinstance(value, str) else []
     ok = len(fields) == 5
@@ -1291,6 +1454,7 @@ def _load_system(app_dir: Path) -> dict:
         fail(f"is not valid YAML ({str(e).splitlines()[0] if str(e) else e})")
     if not isinstance(doc, dict):
         fail(f"must be a mapping with {', '.join(TOP_KEYS[:4])}")
+    scale_on_keys(doc)
     for k in doc:
         if k not in TOP_KEYS:
             fail(f"unknown key '{k}' (allowed: {', '.join(TOP_KEYS)})")
@@ -1311,6 +1475,7 @@ def _load_system(app_dir: Path) -> dict:
     events = bind_events(doc, comps, resources)
     check_resource_clashes(d, resources, comps_doc, comps, events)
     validate_uses(comps, resources, events)
+    validate_scaling(comps, comps_doc, doc.get("apis") or {}, resources, events)
     backups = validate_backups(doc, env_conf, resources, comps)
     registries = doc.get("registries") or []
     if not isinstance(registries, list):
@@ -1319,6 +1484,8 @@ def _load_system(app_dir: Path) -> dict:
     cfg = {"gateway": doc.get("gateway"), "secretStore": doc.get("secretStore"), "hosts": hosts, "registries": [str(r) for r in registries],
            "policy": env_conf["policy"], "observability": env_conf["observability"], "operators": env_conf["operators"],
            "backup": backups, "resources": resources, "events": events}
+    cfg["autoscaling"] = {e: "keda" if any(s["_eff"][e]["scale"]["trigger"] in ("consumes", "cache") for s in services if "external" not in s
+                                          and e in s["environments"] and s["_eff"][e].get("scale")) else None for e in ENVS}
     declared = "autonomy" in doc or env_conf["declared"] or any("autonomy_max" in s["_eff"][e] for s in services for e in s["environments"])
     autonomy = autonomy_json(d, paused, env_conf["autonomy"], env_conf["promote"], services) if declared else None
     return {"system": d, "owner": doc["owner"], "autonomy": autonomy, "services": services, "libraries": [c["name"] for c in comps if c["type"] == "library"], "cfg": cfg}
@@ -1455,8 +1622,61 @@ def labels_for(app: str, svc: dict) -> dict:
     return {"app": svc["name"], "app.kubernetes.io/name": svc["name"], "app.kubernetes.io/part-of": app, "app.kubernetes.io/managed-by": "gitops-app"}
 
 
+KEDA_POLLING = 15
+KEDA_COOLDOWN = 315
+SCALE_DOWN_WINDOW = 345
+
+
 def replicas_for(svc: dict, env: str) -> int:
+    if svc.get("scale"):
+        return int(svc["scale"]["min"])
     return int(svc.get("replicas", 1))
+
+
+def autoscaler_files(app: str, svc: dict, env: str, cfg: dict) -> dict[str, dict]:
+    """The autoscaler documents of a scaled instance (spec 120): an HPA for cpu and memory, a KEDA ScaledObject for queue triggers."""
+    scale = svc.get("scale")
+    if not scale:
+        return {}
+    name, mn, mx, trigger, on = svc["name"], scale["min"], scale["max"], scale["trigger"], scale["on"]
+    target = {"apiVersion": "apps/v1", "kind": "Deployment", "name": name}
+    if trigger in ("cpu", "memory"):
+        return {"hpa.yaml": {
+            "apiVersion": "autoscaling/v2", "kind": "HorizontalPodAutoscaler",
+            "metadata": {"name": name, "labels": labels_for(app, svc)},
+            "spec": {"scaleTargetRef": target, "minReplicas": mn, "maxReplicas": mx,
+                     "metrics": [{"type": "Resource", "resource": {"name": trigger, "target": {"type": "Utilization", "averageUtilization": on[trigger]}}}]},
+        }}
+    files: dict[str, dict] = {}
+    if trigger == "consumes":
+        api = on["consumes"]
+        broker = cfg["events"][api]["broker"]
+        entry: dict = {"type": "nats-jetstream", "metadata": {
+            "natsServerMonitoringEndpoint": f"{app}-{broker}.{app}-{env}.svc:8222", "account": "$G", "stream": f"{app}-{api}",
+            "consumer": name, "lagThreshold": str(on["lag"]), "activationLagThreshold": "0", "useHttps": "false"}}
+    else:
+        entry = {"type": "redis", "metadata": {"listName": on["list"], "listLength": str(on["length"]), "activationListLength": "0",
+                                               "databaseIndex": "0"},
+                 "authenticationRef": {"name": name, "kind": "TriggerAuthentication"}}
+        secret = f"{app}-{on['cache']}-app"
+        files["triggerauthentication.yaml"] = {
+            "apiVersion": "keda.sh/v1alpha1", "kind": "TriggerAuthentication",
+            "metadata": {"name": name, "labels": labels_for(app, svc),
+                         "annotations": {"argocd.argoproj.io/sync-options": "SkipDryRunOnMissingResource=true"}},
+            "spec": {"secretTargetRef": [{"parameter": p, "name": secret, "key": p} for p in ("host", "port", "password")]},
+        }
+    files["scaledobject.yaml"] = {
+        "apiVersion": "keda.sh/v1alpha1", "kind": "ScaledObject",
+        "metadata": {"name": name, "labels": labels_for(app, svc),
+                     "annotations": {"argocd.argoproj.io/sync-wave": "1", "argocd.argoproj.io/sync-options": "SkipDryRunOnMissingResource=true"}},
+        "spec": {"scaleTargetRef": target, "pollingInterval": KEDA_POLLING, "cooldownPeriod": KEDA_COOLDOWN,
+                 "minReplicaCount": mn, "maxReplicaCount": mx,
+                 "advanced": {"horizontalPodAutoscalerConfig": {"behavior": {"scaleDown": {
+                     "stabilizationWindowSeconds": SCALE_DOWN_WINDOW,
+                     "policies": [{"type": "Percent", "value": 100, "periodSeconds": 15}]}}}},
+                 "triggers": [entry]},
+    }
+    return files
 
 
 def addon_env(app: str, svc: dict, resources: dict) -> list[dict]:
@@ -2138,6 +2358,12 @@ def render_app(app_dir: Path, ans: dict) -> dict[Path, str]:
 
     docs = []
     for env in ENVS:
+        scaled = scaled_instances(services, env)
+        comp_sync: dict = {"automated": {"prune": True, "selfHeal": True}, "syncOptions": ["CreateNamespace=true"]}
+        if scaled:
+            comp_sync["syncOptions"].append("RespectIgnoreDifferences=true")
+            if cfg["autoscaling"][env] == "keda":
+                comp_sync["retry"] = RETRY      # a ScaledObject may sync before KEDA's CRD exists
         docs.append({
             "apiVersion": "argoproj.io/v1alpha1", "kind": "ApplicationSet",
             "metadata": {"name": f"{app}-{env}", "namespace": "argocd"},
@@ -2149,7 +2375,9 @@ def render_app(app_dir: Path, ans: dict) -> dict[Path, str]:
                         "project": "default",
                         "source": {"repoURL": gitops_repo, "targetRevision": "main", "path": f"applications/{app}/overlays/{env}/" + "{{name}}"},
                         "destination": {"server": server, "namespace": f"{app}-{env}"},
-                        "syncPolicy": {"automated": {"prune": True, "selfHeal": True}, "syncOptions": ["CreateNamespace=true"]},
+                        "syncPolicy": comp_sync,
+                        **({"ignoreDifferences": [{"group": "apps", "kind": "Deployment", "name": n, "jsonPointers": ["/spec/replicas"]}
+                                                  for n in scaled]} if scaled else {}),
                     },
                 },
                 **({"preservedFields": PRESERVED_FIELDS} if env in cfg["backup"] else {}),
@@ -2261,6 +2489,7 @@ def render_app(app_dir: Path, ans: dict) -> dict[Path, str]:
             route = httproute(app, s, env, cfg)
             if route:
                 files["httproute.yaml"] = route
+            files.update(autoscaler_files(app, s, env, cfg))
             files.update(secret_manifests(app, s, env, cfg))
             files.update(ext_secrets.get(s["name"], {}))
             for fname, doc in files.items():
@@ -2308,6 +2537,14 @@ def operator_files(apps: list[Path], ans: dict) -> dict[Path, str]:
                     needed |= {"plugin-barman-cloud", "cert-manager"}
         if any(env not in owned for env in system["cfg"]["backup"]):
             needed.add("velero")
+        for env, kind in system["cfg"]["autoscaling"].items():
+            if env not in owned and kind == "keda":
+                needed.add("keda")
+        if ans.get("resource_metrics", "provided") == "install":
+            for s in system["services"]:
+                if "external" not in s and any(e not in owned and s["_eff"][e].get("scale") and s["_eff"][e]["scale"]["trigger"] in ("cpu", "memory")
+                                               for e in s["environments"]):
+                    needed.add("metrics-server")
     if not needed:
         return {}
     server = ans.get("cluster_server", "https://kubernetes.default.svc")
