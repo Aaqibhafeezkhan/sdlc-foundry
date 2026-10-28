@@ -38,7 +38,7 @@ step "pull request title and spec rule (skipped without a pull request)"
 python3 scripts/check-pr-local.py
 
 step "cplat tests (Kyverno CLI tests skip without the kyverno binary)"
-uv run --with pytest --with pytest-xdist --with pyyaml --with ruamel.yaml pytest tests/cplat -q -n auto
+uv run --with-requirements requirements-test.txt pytest tests/cplat -q -n auto
 
 if [ "${1:-}" = "--site" ]; then
   step "documentation site (unit tests + build with link validation)"
