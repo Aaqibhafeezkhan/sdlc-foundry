@@ -20,6 +20,26 @@ def test_secrets_and_personal_data_are_removed(raw, gone):
     assert gone not in feedback.redact(raw)
 
 
+def test_unset_secret_store_comment_survives_redaction():
+    line = "# secretStore: (unset)"
+    assert feedback.redact(line) == line
+    assert feedback.redact("secretStore: my-store") == "secretStore: my-store"
+    assert "DATABASE_PASSWORD=<redacted>" == feedback.redact("DATABASE_PASSWORD=hunter2")
+
+
+def test_details_file_keeps_markdown_fences_and_headings(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(feedback, "plugin_versions", lambda: {})
+    details = tmp_path / "details.md"
+    fence = chr(96) * 3
+    details.write_text("## Observed\n\n" + fence + "yaml\nsecretStore: (unset)\n" + fence + "\n\n- first item\n- second item")
+    feedback.main(["--title", "markdown details", "--details-file", str(details), "--repo-dir", str(tmp_path)])
+    body = capsys.readouterr().out
+    assert "## Observed" in body
+    assert fence + "yaml\nsecretStore: (unset)\n" + fence in body
+    assert "- first item\n- second item" in body
+    assert "## Output\n" + fence + "\n" not in body
+
+
 def test_useful_context_survives_redaction():
     text = "commit 0123456789abcdef0123456789abcdef01234567 failed in scripts/render.py line 42: service 'todo-api' missing"
     assert feedback.redact(text) == text

@@ -6,6 +6,8 @@ Format: each section lists changes for a tagged release. Plugin and template ver
 
 ## [Unreleased]
 
+**`cplat feedback` preserves Markdown details and avoids redacting unset keys.** Details files are inserted as Markdown so their headings, lists and nested fences render correctly; secret-like key names with explicit unset placeholders are left intact while populated values remain redacted (#262).
+
 **An amended spec with a plan can be approved again.** Amending a planned spec changes its criteria, so its plan no longer covered them; `cplat spec approve` refused because of the plan, and `/component:plan` only plans an approved spec, so the amend flow could not finish (#208). Approval now checks the spec on its own and moves a plan written for other criteria aside to `plan.v<k>.md` (it says so and names `/component:plan <NNN>` as the next step); `cplat spec check` no longer checks the old plan of an amended draft. `/component:spec approve` commits the set-aside plan with the spec.
 
 **Plugins:** `component` 1.5.1.
