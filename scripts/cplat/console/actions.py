@@ -62,19 +62,65 @@ def state_dir() -> Path:
     return Path(base) / "sdlc-foundry" / "console"
 
 
-def workspace() -> Path:
-    """The folder with the local clones: `workspace` of the personal settings, default ~/src."""
+def configured_workspace() -> Path | None:
+    """The explicitly configured clone workspace, if one is set."""
     path = Path(os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")) / "sdlc-foundry" / "settings.yml"
     try:
         data = yaml.safe_load(path.read_text()) or {}
     except (OSError, yaml.YAMLError):
         data = {}
     value = data.get("workspace") if isinstance(data, dict) else None
-    return Path(str(value)).expanduser() if value else Path.home() / "src"
+    return Path(str(value)).expanduser() if value else None
 
 
-def clone_of(repo: str) -> Path:
-    return workspace() / repo.split("/")[-1]
+def workspace() -> Path:
+    """The folder with local clones: configured workspace or ~/src."""
+    return configured_workspace() or Path.home() / "src"
+
+
+def _normalise_remote(value: str) -> str:
+    value = value.strip()
+    if value.startswith("git@github.com:"):
+        value = "https://github.com/" + value.removeprefix("git@github.com:")
+    return value.removesuffix(".git").rstrip("/").lower()
+
+
+def _valid_clone(repo: str, path: Path) -> bool:
+    """A component clone must have the console allowlist and the expected GitHub origin."""
+    if not (path / ".claude" / "settings.json").is_file():
+        return False
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"], cwd=path, capture_output=True,
+            text=True, timeout=5, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    expected = _normalise_remote("https://github.com/" + repo)
+    return result.returncode == 0 and _normalise_remote(result.stdout) == expected
+
+
+def clone_of(repo: str, repo_dir: str | Path | None = None) -> Path:
+    """Resolve a component clone, preferring configured workspace then a sibling of the gitops clone."""
+    name = repo.split("/")[-1]
+    if repo_dir is None:
+        return workspace() / name
+
+    candidates = []
+    explicit = configured_workspace()
+    if explicit is not None:
+        candidates.append(explicit / name)
+    candidates.append(Path(repo_dir).expanduser().resolve().parent / name)
+    candidates.append(Path.home() / "src" / name)
+    unique = []
+    for candidate in candidates:
+        candidate = candidate.resolve()
+        if candidate not in unique:
+            unique.append(candidate)
+    for candidate in unique:
+        if _valid_clone(repo, candidate):
+            return candidate
+    return unique[0]
 
 
 # ---------------- commands ----------------
@@ -167,13 +213,13 @@ def _slash(kind: str, obj: dict, args: dict) -> tuple[str, list[str]]:
     raise ValueError(f"unknown action kind {kind!r}")
 
 
-def command_for(kind: str, obj: dict, args: dict) -> tuple[list[str], str, str]:
+def command_for(kind: str, obj: dict, args: dict, repo_dir: str | Path | None = None) -> tuple[list[str], str, str]:
     """`(argv, display, repo)` of one action. Raises ValueError for an unknown kind or missing arguments."""
     repo = str(obj.get("repo") or "")
     if "/" not in repo:
         raise ValueError("the object names no repository")
     repo = _match(REPO, repo, "repository")
-    clone = clone_of(repo)
+    clone = clone_of(repo, repo_dir)
     if kind == "clone":
         argv = ["gh", "repo", "clone", repo, str(clone)]
         return argv, shlex.join(argv), repo
@@ -187,7 +233,7 @@ def command_for(kind: str, obj: dict, args: dict) -> tuple[list[str], str, str]:
     return argv, display, repo
 
 
-def prerequisites(kind: str, obj: dict, env: dict, args: dict | None = None) -> list[str]:
+def prerequisites(kind: str, obj: dict, env: dict, args: dict | None = None, repo_dir: str | Path | None = None) -> list[str]:
     """What is missing for this action: `claude`, `gh`, `kube:<env>`, `clone:<repo>`."""
     path = env.get("PATH", "")
     missing: list[str] = []
@@ -202,8 +248,10 @@ def prerequisites(kind: str, obj: dict, env: dict, args: dict | None = None) -> 
         if not shutil.which(_KUBE, path=path):
             missing.append(f"kube:{target}")
     repo = str(obj.get("repo") or "")
-    if kind != "clone" and "/" in repo and not (clone_of(repo) / ".claude" / "settings.json").is_file():
-        missing.append(f"clone:{repo}")
+    if kind != "clone" and "/" in repo:
+        clone = clone_of(repo, repo_dir)
+        if not (_valid_clone(repo, clone) if repo_dir is not None else (clone / ".claude" / "settings.json").is_file()):
+            missing.append(f"clone:{repo}")
     return missing
 
 
@@ -320,12 +368,12 @@ def summary() -> dict:
 
 # ---------------- running ----------------
 
-def start(kind: str, obj: dict, args: dict, env: dict | None = None) -> str:
+def start(kind: str, obj: dict, args: dict, env: dict | None = None, repo_dir: str | Path | None = None) -> str:
     """Run one confirmed action in the background and return its id.
 
     Raises ValueError (400), Missing (412) or Conflict (409)."""
-    argv, display, repo = command_for(kind, obj, args)
-    missing = prerequisites(kind, obj, env if env is not None else dict(os.environ), args)
+    argv, display, repo = command_for(kind, obj, args, repo_dir)
+    missing = prerequisites(kind, obj, env if env is not None else dict(os.environ), args, repo_dir)
     if missing:
         raise Missing(missing[0])
     return _launch(kind, obj, args, argv, display, repo)

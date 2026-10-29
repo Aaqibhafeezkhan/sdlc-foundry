@@ -318,7 +318,7 @@ class Handler(BaseHTTPRequestHandler):
     def start(self, body: dict) -> str:
         obj, args = body.get("object"), body.get("args")
         try:
-            return actions.start(str(body.get("kind") or ""), obj if isinstance(obj, dict) else {}, args if isinstance(args, dict) else {})
+            return actions.start(str(body.get("kind") or ""), obj if isinstance(obj, dict) else {}, args if isinstance(args, dict) else {}, repo_dir=self.ctx.repo_dir)
         except ValueError as e:
             raise HttpError(400, "invalid action", str(e)) from e
         except actions.Conflict as e:
