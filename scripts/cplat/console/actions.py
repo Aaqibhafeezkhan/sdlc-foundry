@@ -79,14 +79,16 @@ def workspace() -> Path:
 
 
 def _normalise_remote(value: str) -> str:
-    value = value.strip()
+    value = value.strip().lower()
     if value.startswith("git@github.com:"):
         value = "https://github.com/" + value.removeprefix("git@github.com:")
-    return value.removesuffix(".git").rstrip("/").lower()
+    elif value.startswith("ssh://git@github.com/"):
+        value = "https://github.com/" + value.removeprefix("ssh://git@github.com/")
+    return value.removesuffix(".git").rstrip("/")
 
 
 def _valid_clone(repo: str, path: Path) -> bool:
-    """A component clone must have the console allowlist and the expected GitHub origin."""
+    """A discovered component clone must have the allowlist and the expected GitHub origin."""
     if not (path / ".claude" / "settings.json").is_file():
         return False
     try:
@@ -101,26 +103,25 @@ def _valid_clone(repo: str, path: Path) -> bool:
 
 
 def clone_of(repo: str, repo_dir: str | Path | None = None) -> Path:
-    """Resolve a component clone, preferring configured workspace then a sibling of the gitops clone."""
+    """Resolve a component clone: configured workspace, sibling, then ~/src."""
     name = repo.split("/")[-1]
-    if repo_dir is None:
-        return workspace() / name
-
-    candidates = []
     explicit = configured_workspace()
-    if explicit is not None:
-        candidates.append(explicit / name)
-    candidates.append(Path(repo_dir).expanduser().resolve().parent / name)
-    candidates.append(Path.home() / "src" / name)
-    unique = []
-    for candidate in candidates:
-        candidate = candidate.resolve()
-        if candidate not in unique:
-            unique.append(candidate)
-    for candidate in unique:
-        if _valid_clone(repo, candidate):
-            return candidate
-    return unique[0]
+    if explicit is None:
+        explicit = Path.home() / "src"
+    configured = explicit / name
+    # Keep the historical workspace contract: its allowlist is sufficient, including fork origins.
+    if (configured / ".claude" / "settings.json").is_file():
+        return configured
+    if repo_dir is None:
+        return configured
+
+    sibling = Path(repo_dir).expanduser().resolve().parent / name
+    if _valid_clone(repo, sibling):
+        return sibling
+    fallback = Path.home() / "src" / name
+    if fallback != configured and _valid_clone(repo, fallback):
+        return fallback
+    return sibling
 
 
 # ---------------- commands ----------------
@@ -379,7 +380,7 @@ def start(kind: str, obj: dict, args: dict, env: dict | None = None, repo_dir: s
     return _launch(kind, obj, args, argv, display, repo)
 
 
-def retry(action_id: str, env: dict | None = None) -> str:
+def retry(action_id: str, env: dict | None = None, repo_dir: str | Path | None = None) -> str:
     """Start the same command again as a new action."""
     with _lock:
         _ensure()
@@ -387,7 +388,7 @@ def retry(action_id: str, env: dict | None = None) -> str:
         if old is None:
             raise KeyError(action_id)
         old_copy = dict(old)
-    missing = prerequisites(old_copy["kind"], old_copy["object"], env if env is not None else dict(os.environ), old_copy.get("args"))
+    missing = prerequisites(old_copy["kind"], old_copy["object"], env if env is not None else dict(os.environ), old_copy.get("args"), repo_dir)
     if missing:
         raise Missing(missing[0])
     new_id = _launch(old_copy["kind"], old_copy["object"], old_copy.get("args") or {}, old_copy["_argv"], old_copy["command"], old_copy["repo"])
