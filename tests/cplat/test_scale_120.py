@@ -976,15 +976,15 @@ def test_an_environment_without_scale_changes_nothing_next_to_one_with_it_ac_120
     assert {k: v for k, v in plain.items() if "/web/" in k} == {k: v for k, v in one.items() if "/web/" in k}
 
 
-BEFORE_120 = {"full5": ("bf4c5ffc245db1166768f726cdbf9b29618a050bfed682499ad3a4de22037cb4", 58),
-              "rich5": ("54e93234734051c4df2494a3383b27954e5eeeaeaf58d76c10c545562b403cae", 58),
-              "db-bucket": ("db23d5c3c8f752510fee7396f719342b8706b13370c0ffa997fbd48f15cdc9ed", 50),
-              "cache": ("c5b6a29786bb58cb84e281c6a0fab65cce0862dfbc45bf61a0ca59e802587077", 40),
+BEFORE_120 = {"full5": ("0618d1c1a3abfe7a42141429f06e2c8035447cf7ed6f5942775487666f600c4b", 67),   # spec 128: a generated component secret gets a credentials Job
+              "rich5": ("fd5079e714fe1f27eba5cec619e3ec68b5ebfdd3c88692f3cbc8107db437f346", 67),   # spec 128: a generated component secret gets a credentials Job
+              "db-bucket": ("ba5ac404d9ebf9e6be5326e01026eae110001f347ceaa11c09885b5abc448a4c", 56),   # spec 128: the credentials Job replaces the bucket's generators and ExternalSecret
+              "cache": ("d836daf235897e83ea49cfb411dc2bef4d67b8becd03160a2d6ffb4d2c5b71ef", 49),   # spec 128: the credentials Job replaces the generator files
               "events": ("9fe3842825e291f58f1e33aac03f53edf98df7c9053eefbeae7882d3ad3f57e4", 26),
-              "events-multi": ("32cf57fc7f192b4e17858f16716f6a82553103c51173c9e45e1d5b28c2d779e7", 61),
-              "broker": ("22a18e5cb8bd47fdfa8288a09efdef76feb5a73ae99acbba664bac9ae7e91fad", 55),
-              "broker-wide": ("ebc671dd740f12dfcdf9b4ef9fb4f389d01f8d5148f00c441fd81b416d82a2f6", 76),
-              "broker-ext": ("f552152670af57260faddf29750116121f184baa8d535c57b48330e234546ba2", 48),
+              "events-multi": ("429996ff095d3e776ea0274025dd93738167dbdebf2c6952cfd938def0cac0ea", 70),
+              "broker": ("94b0061d00bfdb65091e3c42479e5c20be41621fdb55ddd7047f7bbd9364eff3", 58),   # spec 128: the credentials Job replaces the bucket's generators and ExternalSecret
+              "broker-wide": ("e6f6bfde3eda38e3dfa955b86c1062dc2b095c939342c952f087fcd3cdc39eee", 76),   # spec 128: the credentials Job replaces the bucket's generators and ExternalSecret
+              "broker-ext": ("145088642d0c18a09601610da14f22f1d6fa3bd20cc9cf2f12665ec09f3471af", 50),   # spec 128: the credentials Job replaces the bucket's generators and ExternalSecret
               "expose-openapi": ("8e44481de7f03dce36be3bc90398e7f3f610bb60c578eb1373d9eb4fa77b85ab", 35)}   # taken from the renderer before spec 120
 
 

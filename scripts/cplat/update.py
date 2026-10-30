@@ -453,6 +453,43 @@ def _normalised(tree: dict[str, bytes], pins: list[bytes] = ()) -> dict[str, byt
     return out
 
 
+def _generator_backed(text: bytes | str) -> bool:
+    """True for an ExternalSecret whose `spec.dataFrom` has a `generatorRef`."""
+    try:
+        doc = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return False
+    return isinstance(doc, dict) and any(
+        isinstance(item, dict) and "generatorRef" in (item.get("sourceRef") or {}) for item in (doc.get("spec") or {}).get("dataFrom") or [])
+
+
+def _without_credential_writers(tree: dict) -> dict:
+    """The migration proof ignores what writes a generated credential (spec 128): `password-generator.yaml`, `credentials-*.yaml` and
+    generator-backed `externalsecret-*.yaml` (values are bytes or text), also in the `resources` of the same directory's `kustomization.yaml` (compared parsed)."""
+    def dropped(p: str) -> bool:
+        name = p.rsplit("/", 1)[-1]
+        return (name == "password-generator.yaml" or (name.startswith("credentials-") and name.endswith(".yaml"))
+                or (name.startswith("externalsecret-") and name.endswith(".yaml") and _generator_backed(tree[p])))
+    gone = {p for p in tree if dropped(p)}
+    out = {p: b for p, b in tree.items() if p not in gone}
+    for p in list(out):
+        if p.rsplit("/", 1)[-1] != "kustomization.yaml":
+            continue
+        folder = p.rpartition("/")[0]
+        names = {g.rsplit("/", 1)[-1] for g in gone if g.rpartition("/")[0] == folder}
+        if not names:
+            continue
+        try:
+            doc = yaml.safe_load(out[p])
+        except yaml.YAMLError:
+            continue
+        if isinstance(doc, dict) and isinstance(doc.get("resources"), list):
+            doc["resources"] = [r for r in doc["resources"] if r not in names]
+            dumped = yaml.safe_dump(doc, sort_keys=True)
+            out[p] = dumped.encode() if isinstance(out[p], bytes) else dumped
+    return out
+
+
 def convert_systems(repo: Path) -> list[dict]:
     """Convert every 4.x application directory; any problem stops the migration before anything changes."""
     owner = _owner(repo)
@@ -498,8 +535,8 @@ def apply_systems(repo: Path, systems: list[dict], reference: dict[str, bytes]) 
             (repo / rel).unlink()
     gitops.render(repo)
     pins = _digested_refs(repo)
-    reference = _normalised(reference)
-    after = _normalised(_tree(repo), pins)
+    reference = _without_credential_writers(_normalised(reference))
+    after = _without_credential_writers(_normalised(_tree(repo), pins))
     diff =[f"{p} (changed)" for p in sorted(reference) if p in after and after[p] != reference[p]]
     diff += [f"{p} (missing)" for p in sorted(reference) if p not in after]
     diff += [f"{p} (extra)" for p in sorted(after) if p not in reference]
@@ -540,12 +577,19 @@ def _targets(mod, app_dir: Path, system: str, r: str, typ: str, env: str):
 
 
 def _cache_url(app_dir: Path, env: str, name: str) -> str | None:
-    """The rendered `spec.target.template.data.url` of a cache's ExternalSecret; None when the file or the key is missing (spec 127)."""
-    f = app_dir / "addons" / env / name / "externalsecret.yaml"
+    """The url template of a cache's Secret `<system>-<name>-app`: `data.url` of the credentials plan (5.5), else of the ExternalSecret (5.4);
+    None when neither has it (specs 127, 128)."""
+    folder = app_dir / "addons" / env / name
     try:
-        url = yaml.safe_load(f.read_text())["spec"]["target"]["template"]["data"]["url"]
-    except Exception:  # noqa: BLE001 - a missing file or key means no url to compare
-        return None
+        plan = json.loads(yaml.safe_load((folder / "credentials-configmap.yaml").read_text())["data"]["plan.json"])
+        url = next(s["data"]["url"] for s in plan["secrets"] if s["name"].endswith("-app"))
+    except Exception:  # noqa: BLE001 - a missing file or key: try the 5.4 form
+        url = None
+    if url is None:
+        try:
+            url = yaml.safe_load((folder / "externalsecret.yaml").read_text())["spec"]["target"]["template"]["data"]["url"]
+        except Exception:  # noqa: BLE001 - a missing file or key means no url to compare
+            return None
     return url if isinstance(url, str) else None
 
 
@@ -623,12 +667,59 @@ def _url_row(rows: list[dict], system: str, r: str, env: str, b: dict, a: dict) 
                          "which authenticates as the same user default: running pods need nothing, new Secrets get the new form"})
 
 
+_CRED_KINDS = {"cache": ("statefulset.yaml", "the password is", "an ExternalSecret with a Password generator", "passwords",
+                         "; a server whose password differs from its Secret restarts once"),
+               "broker": ("server.yaml", "the user passwords are", "ExternalSecrets with a Password generator", "passwords",
+                          "; a server that refuses a password of its Secrets restarts once"),
+               "bucket": ("seaweed.yaml", "the keys are", "an ExternalSecret with two Password generators", "keys", ""),
+               "component": (None, "generated secrets are", "ExternalSecrets with a Password generator", "values", "")}
+
+
+def _writers(repo: Path) -> dict[tuple[str, str, str, str], str]:
+    """{(type, system, name, env): "generator" | "job"} of every owner directory that has a credential writer (spec 128)."""
+    out: dict[tuple[str, str, str, str], str] = {}
+    for app_dir in sorted(p.parent for p in (repo / "applications").glob("*/system.yaml")):
+        for sub, depth in (("addons", True), ("overlays", False)):
+            for d in sorted((app_dir / sub).glob("*/*")):
+                if not d.is_dir():
+                    continue
+                if (d / "password-generator.yaml").is_file() or (d / "access-key-generator.yaml").is_file():
+                    form = "generator"
+                elif (d / "credentials-job.yaml").is_file():
+                    form = "job"
+                else:
+                    continue
+                typ = "component"
+                if depth:
+                    typ = next((t for t, v in _CRED_KINDS.items() if v[0] and (d / v[0]).is_file()), "")
+                    if not typ:
+                        continue
+                out[(typ, app_dir.name, d.name, d.parent.name)] = form
+    return out
+
+
+def _credential_rows(rows: list[dict], before: dict, after: dict) -> None:
+    """One `credentials` row per resource type whose owners moved from generators to a credentials Job (spec 128, AC-128.9)."""
+    order = {e: i for i, e in enumerate(core_envs())}
+    for typ, (_, what, old, kept, extra) in _CRED_KINDS.items():
+        moved = [k for k, form in after.items() if k[0] == typ and form == "job" and before.get(k) == "generator"]
+        if not moved:
+            continue
+        envs = ",".join(sorted({k[3] for k in moved}, key=lambda e: order.get(e, 9)))
+        names = ", ".join(sorted({k[2] for k in moved}))
+        rows.append({"env": envs, "resource": typ, "kind": "credentials", "from": "ExternalSecret + Password generator",
+                     "to": "credentials Job (create if absent)", "moves": False,
+                     "text": f"{envs:<8} {typ} {names}: {what} written once by a credentials Job (create if absent) instead of {old}; "
+                             f"existing Secrets keep their {kept}, nothing to do{extra} (#316)"})
+
+
 def render_and_compare(req: dict, repo: Path, written: set[str] | None = None) -> dict | None:
     """Re-render with the repo's new renderer (held pins follow from it) and list what moves, per environment; None when nothing does.
     `written` (optional) receives every path under applications/ and operators/ the render created or changed: generated output."""
     import upgrade
     mod = upgrade.load_renderer(repo)
     before = _instances(mod, repo)
+    writers_before = _writers(repo)
     ops_before = _operator_revisions(repo)
     snap = _generated_snapshot(repo) if written is not None else {}
     gitops.render(repo)
@@ -664,6 +755,7 @@ def render_and_compare(req: dict, repo: Path, written: set[str] | None = None) -
             rows.append({"env": "cluster", "resource": name, "kind": "operator", "from": ops_before[name], "to": ops_after[name], "moves": True,
                          "text": f"{'cluster':<8} operator {name} {ops_before[name]} → {ops_after[name]} "
                                  f"(operators/apps; shared by {', '.join(envs)}: moves with {envs[0]}'s step)"})
+    _credential_rows(rows, writers_before, _writers(repo))
     if not rows:
         return None
     return {"from": req["old"] or "none", "to": req["new"], "rows": rows, "lines": [x["text"] for x in rows]}
@@ -862,6 +954,14 @@ def _lost(repo: Path, modified: list[str], replaced: list[tuple[str, str]], drop
                 pins = _digested_refs(repo)
                 if was.returncode == 0 and _normalised({path: was.stdout.encode()}) == _normalised({path: (repo / path).read_bytes()}, pins):
                     continue
+                if path.endswith("/kustomization.yaml") and was.returncode == 0:   # spec 128: it lists the credentials files instead of the generators
+                    folder = path.rpartition("/")[0]
+                    names = run(["git", "ls-tree", "--name-only", "HEAD", folder + "/"], cwd=repo, check=False).stdout.splitlines()
+                    old_dir = {n: run(["git", "show", f"HEAD:{n}"], cwd=repo, check=False).stdout.encode() for n in names}
+                    new_dir = {f.relative_to(repo).as_posix(): f.read_bytes() for f in (repo / folder).iterdir() if f.is_file()}
+                    old_dir, new_dir = (_without_credential_writers(_normalised(t, pins)) for t in (old_dir, new_dir))
+                    if old_dir.get(path) == new_dir.get(path):
+                        continue
             except OSError:
                 pass
         lost.append({"kind": "file", "file": path, "entry": None, "was": None, "where": _where_file(path)})
