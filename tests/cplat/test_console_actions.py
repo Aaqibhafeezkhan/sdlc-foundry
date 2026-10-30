@@ -68,7 +68,7 @@ def ready(tmp_path, monkeypatch):
 
 def stub_command(monkeypatch, ready, code=0, display="cplat headless '/component:spec approve 013'"):
     from console import actions
-    monkeypatch.setattr(actions, "command_for", lambda kind, obj, args: (
+    monkeypatch.setattr(actions, "command_for", lambda kind, obj, args, repo_dir=None: (
         [sys.executable, "-c", STUB, str(ready.go), str(code), str(ready.pidfile)], display, "acme/shop-api"))
 
 
@@ -398,7 +398,7 @@ def test_describe_runs_the_spec_command_with_the_sentence_ac_122_19(console, rea
     from console import actions
     seen = []
     real = actions.command_for
-    monkeypatch.setattr(actions, "command_for", lambda kind, obj, args: seen.append(real(kind, obj, args)) or (
+    monkeypatch.setattr(actions, "command_for", lambda kind, obj, args, repo_dir=None: seen.append(real(kind, obj, args, repo_dir)) or (
         [sys.executable, "-c", "print('ok')"], seen[-1][1], seen[-1][2]))
     st, body = c.json("POST", "/api/actions", {"kind": "describe", "object": {"repo": "acme/shop-gitops"},
                                                "args": {"level": "system", "text": "add a wishlist"}})
