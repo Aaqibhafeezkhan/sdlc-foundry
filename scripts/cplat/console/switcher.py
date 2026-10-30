@@ -55,7 +55,7 @@ def open_system(repo: str, repo_dir: str | Path | None = None) -> dict:
     """Start the console of the local clone of `repo` (detached, free port) and return `{"url", "command"}` (AC-122.29).
 
     Raises ValueError without a clone and RuntimeError when no address is printed in time."""
-    clone = actions.clone_of(repo)
+    clone = actions.clone_of(repo, repo_dir)
     if not clone.is_dir():
         raise ValueError(f"no local clone of {repo}: clone it first")
     argv = [sys.executable, str(CPLAT), "ui", "--repo-dir", str(clone), "--no-open", "--port", "0"]
