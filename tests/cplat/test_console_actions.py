@@ -7,6 +7,7 @@ import json
 import os
 import re
 import stat
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -54,7 +55,6 @@ def ready(tmp_path, monkeypatch):
     for name in ("shop-api", "shop-gitops"):
         (ws / name / ".claude").mkdir(parents=True)
         (ws / name / ".claude" / "settings.json").write_text("{}")
-        import subprocess
         subprocess.run(["git", "init", "-q", str(ws / name)], check=True)
         subprocess.run(["git", "-C", str(ws / name), "remote", "add", "origin", f"https://github.com/acme/{name}.git"], check=True)
     conf = tmp_path / "config" / "sdlc-foundry"
