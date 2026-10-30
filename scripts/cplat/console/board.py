@@ -317,7 +317,7 @@ def _column(stage: str, cards: list[dict], repo_dir: str | Path | None = None) -
 
 
 def _columns(items: list[dict], repo_dir: str | Path | None = None) -> str:
-    cols = "".join(_column(s, [i for i in items if i["stage"] == s]) for s in stages.STAGES)
+    cols = "".join(_column(s, [i for i in items if i["stage"] == s], repo_dir) for s in stages.STAGES)
     return f'<div class="scroll-x"><div class="board">{cols}</div></div>'
 
 
