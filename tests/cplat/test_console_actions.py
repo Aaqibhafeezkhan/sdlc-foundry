@@ -54,7 +54,9 @@ def ready(tmp_path, monkeypatch):
     for name in ("shop-api", "shop-gitops"):
         (ws / name / ".claude").mkdir(parents=True)
         (ws / name / ".claude" / "settings.json").write_text("{}")
-        import subprocess\n        subprocess.run(["git", "init", "-q", str(ws / name)], check=True)\n        subprocess.run(["git", "-C", str(ws / name), "remote", "add", "origin", f"https://github.com/acme/{name}.git"], check=True)
+        import subprocess
+        subprocess.run(["git", "init", "-q", str(ws / name)], check=True)
+        subprocess.run(["git", "-C", str(ws / name), "remote", "add", "origin", f"https://github.com/acme/{name}.git"], check=True)
     conf = tmp_path / "config" / "sdlc-foundry"
     conf.mkdir(parents=True, exist_ok=True)
     (conf / "settings.yml").write_text(yaml.safe_dump({"workspace": str(ws)}))
@@ -253,7 +255,8 @@ def test_clone_resolution_rejects_a_sibling_with_the_wrong_origin(ready, tmp_pat
     subprocess.run(["git", "-C", str(sibling), "remote", "add", "origin", "https://github.com/acme/not-shop-api.git"], check=True)
 
     assert actions.prerequisites("approve", APPROVE_OBJ, dict(os.environ), {"level": "component"}, repo_dir=gitops) == ["clone:acme/shop-api"]
-\n# ---------------- AC-122.44: the actions you started ----------------
+
+# ---------------- AC-122.44: the actions you started ----------------
 
 def test_a_running_action_shows_command_step_and_the_indicator_ac_122_44(console, ready, monkeypatch):  # AC-122.44
     stub_command(monkeypatch, ready)
@@ -493,3 +496,26 @@ def test_choosing_a_system_opens_its_clone_or_offers_to_clone_first_ac_122_29(tm
     have, missing = by_repo["acme/shop-gitops"], by_repo["bob/dev-gitops"]
     assert have["clone"] == str(ready.ws / "shop-gitops") and have["action"] == "open"
     assert missing["clone"] is None and missing["action"] == "clone"
+
+
+
+def test_clone_resolution_accepts_ssh_url_remotes(ready, tmp_path, monkeypatch):
+    import subprocess
+    from console import actions
+
+    home = tmp_path / "home"
+    home.mkdir()
+    config = tmp_path / "config"
+    (config / "sdlc-foundry").mkdir(parents=True)
+    (config / "sdlc-foundry" / "settings.yml").write_text("{}")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+    gitops = tmp_path / "project" / "project-gitops"
+    sibling = tmp_path / "project" / "shop-api"
+    gitops.mkdir(parents=True)
+    (sibling / ".claude").mkdir(parents=True)
+    (sibling / ".claude" / "settings.json").write_text("{}")
+    subprocess.run(["git", "init", "-q", str(sibling)], check=True)
+    subprocess.run(["git", "-C", str(sibling), "remote", "add", "origin", "ssh://git@github.com/acme/shop-api.git"], check=True)
+
+    assert actions.clone_of("acme/shop-api", repo_dir=gitops) == sibling
