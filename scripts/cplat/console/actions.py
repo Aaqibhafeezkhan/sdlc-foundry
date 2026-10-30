@@ -106,8 +106,8 @@ def _valid_resolved_clone(repo: str, path: Path, repo_dir: str | Path | None) ->
     """Configured workspaces keep their historical allowlist check; discovered clones also need a matching origin."""
     if repo_dir is None:
         return (path / ".claude" / "settings.json").is_file()
-    explicit = configured_workspace() or Path.home() / "src"
-    if path.resolve() == (explicit / repo.split("/")[-1]).resolve():
+    explicit = configured_workspace()
+    if explicit is not None and path.resolve() == (explicit / repo.split("/")[-1]).resolve():
         return (path / ".claude" / "settings.json").is_file()
     return _valid_clone(repo, path)
 
@@ -116,12 +116,13 @@ def clone_of(repo: str, repo_dir: str | Path | None = None) -> Path:
     """Resolve a component clone: configured workspace, sibling, then ~/src."""
     name = repo.split("/")[-1]
     explicit = configured_workspace()
-    if explicit is None:
-        explicit = Path.home() / "src"
-    configured = explicit / name
-    # Keep the historical workspace contract: its allowlist is sufficient, including fork origins.
-    if (configured / ".claude" / "settings.json").is_file():
-        return configured
+    if explicit is not None:
+        configured = explicit / name
+        # Keep the historical configured-workspace contract, including fork origins.
+        if (configured / ".claude" / "settings.json").is_file():
+            return configured
+    else:
+        configured = Path.home() / "src" / name
     if repo_dir is None:
         return configured
 
