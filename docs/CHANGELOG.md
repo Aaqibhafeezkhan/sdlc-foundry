@@ -6,7 +6,7 @@ Format: each section lists changes for a tagged release. Plugin and template ver
 
 ## [Unreleased]
 
-**The console finds component clones beside the gitops clone.** Console actions now prefer a configured workspace, then a sibling clone from the `/system:new` layout, and finally `~/src`; candidate clones must have the expected GitHub origin and `.claude/settings.json`. The console passes its active gitops clone into action resolution. (#272)
+**The console finds component clones beside the gitops clone.** Console actions prefer a configured workspace, then a sibling of the active gitops clone, and finally `~/src`. Configured-workspace clones keep the `.claude/settings.json` check; sibling and fallback clones must also have the expected GitHub origin. The active gitops clone is passed through actions, panels, the board, run handoff and the system switcher. (#272)
 
 **An amended spec with a plan can be approved again.** Amending a planned spec changes its criteria, so its plan no longer covered them; `cplat spec approve` refused because of the plan, and `/component:plan` only plans an approved spec, so the amend flow could not finish (#208). Approval now checks the spec on its own and moves a plan written for other criteria aside to `plan.v<k>.md` (it says so and names `/component:plan <NNN>` as the next step); `cplat spec check` no longer checks the old plan of an amended draft. `/component:spec approve` commits the set-aside plan with the spec.
 
