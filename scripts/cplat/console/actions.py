@@ -132,7 +132,7 @@ def clone_of(repo: str, repo_dir: str | Path | None = None) -> Path:
     fallback = Path.home() / "src" / name
     if fallback != configured and _valid_clone(repo, fallback):
         return fallback
-    return sibling
+    return configured if explicit is not None else sibling
 
 
 # ---------------- commands ----------------
