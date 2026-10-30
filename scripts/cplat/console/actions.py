@@ -102,6 +102,16 @@ def _valid_clone(repo: str, path: Path) -> bool:
     return result.returncode == 0 and _normalise_remote(result.stdout) == expected
 
 
+def _valid_resolved_clone(repo: str, path: Path, repo_dir: str | Path | None) -> bool:
+    """Configured workspaces keep their historical allowlist check; discovered clones also need a matching origin."""
+    if repo_dir is None:
+        return (path / ".claude" / "settings.json").is_file()
+    explicit = configured_workspace() or Path.home() / "src"
+    if path.resolve() == (explicit / repo.split("/")[-1]).resolve():
+        return (path / ".claude" / "settings.json").is_file()
+    return _valid_clone(repo, path)
+
+
 def clone_of(repo: str, repo_dir: str | Path | None = None) -> Path:
     """Resolve a component clone: configured workspace, sibling, then ~/src."""
     name = repo.split("/")[-1]
@@ -251,7 +261,7 @@ def prerequisites(kind: str, obj: dict, env: dict, args: dict | None = None, rep
     repo = str(obj.get("repo") or "")
     if kind != "clone" and "/" in repo:
         clone = clone_of(repo, repo_dir)
-        if not (_valid_clone(repo, clone) if repo_dir is not None else (clone / ".claude" / "settings.json").is_file()):
+        if not _valid_resolved_clone(repo, clone, repo_dir):
             missing.append(f"clone:{repo}")
     return missing
 
