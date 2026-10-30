@@ -519,3 +519,20 @@ def test_clone_resolution_accepts_ssh_url_remotes(ready, tmp_path, monkeypatch):
     subprocess.run(["git", "-C", str(sibling), "remote", "add", "origin", "ssh://git@github.com/acme/shop-api.git"], check=True)
 
     assert actions.clone_of("acme/shop-api", repo_dir=gitops) == sibling
+
+
+
+def test_configured_workspace_keeps_accepting_fork_origins(ready, monkeypatch):
+    import subprocess
+    from console import actions
+
+    clone = ready.ws / "shop-api"
+    subprocess.run(
+        ["git", "-C", str(clone), "remote", "set-url", "origin", "https://github.com/my-fork/shop-api.git"],
+        check=True,
+    )
+
+    assert actions.clone_of("acme/shop-api", repo_dir=ready.ws / "shop-gitops") == clone
+    assert actions.prerequisites(
+        "approve", APPROVE_OBJ, dict(os.environ), {"level": "component"}, repo_dir=ready.ws / "shop-gitops"
+    ) == []
