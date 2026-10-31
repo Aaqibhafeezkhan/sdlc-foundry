@@ -46,6 +46,8 @@ def list_systems(repo_dir: str | Path | None = None) -> list[dict]:
     out = []
     for repo in sorted(repos):
         clone = actions.clone_of(repo, repo_dir)
+        # gitops-app repositories are system roots, not component clones: they intentionally
+        # have no .claude/settings.json and therefore skip component origin/allowlist validation.
         have = clone.is_dir()
         out.append({"repo": repo, "clone": str(clone) if have else None, "action": "open" if have else "clone"})
     return out

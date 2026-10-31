@@ -209,10 +209,7 @@ def test_prerequisites_lists_what_is_missing_ac_122_41(ready, monkeypatch):  # A
     assert "claude" in missing and "gh" in missing
 
 
-
-
 def test_clone_resolution_finds_a_valid_sibling_of_the_gitops_clone(ready, tmp_path, monkeypatch):
-    import subprocess
     from console import actions
 
     home = tmp_path / "home"
@@ -233,6 +230,34 @@ def test_clone_resolution_finds_a_valid_sibling_of_the_gitops_clone(ready, tmp_p
     argv, _, _ = actions.command_for("approve", APPROVE_OBJ, {"level": "component"}, repo_dir=gitops)
     assert str(sibling) in argv
     assert actions.prerequisites("approve", APPROVE_OBJ, dict(os.environ), {"level": "component"}, repo_dir=gitops) == []
+
+
+def test_clone_resolution_checks_home_src_after_a_missing_sibling_without_workspace(tmp_path, monkeypatch):
+    from console import actions
+
+    home = tmp_path / "home"
+    home.mkdir()
+    config = tmp_path / "config"
+    (config / "sdlc-foundry").mkdir(parents=True)
+    (config / "sdlc-foundry" / "settings.yml").write_text("{}")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+
+    gitops = tmp_path / "project" / "project-gitops"
+    fallback = home / "src" / "shop-api"
+    gitops.mkdir(parents=True)
+    (fallback / ".claude").mkdir(parents=True)
+    (fallback / ".claude" / "settings.json").write_text("{}")
+    subprocess.run(["git", "init", "-q", str(fallback)], check=True)
+    subprocess.run(
+        ["git", "-C", str(fallback), "remote", "add", "origin", "https://github.com/acme/shop-api.git"],
+        check=True,
+    )
+
+    assert actions.clone_of("acme/shop-api", repo_dir=gitops) == fallback
+    assert actions.prerequisites(
+        "approve", APPROVE_OBJ, dict(os.environ), {"level": "component"}, repo_dir=gitops
+    ) == []
 
 
 def test_clone_resolution_rejects_a_sibling_with_the_wrong_origin(ready, tmp_path, monkeypatch):
@@ -498,7 +523,6 @@ def test_choosing_a_system_opens_its_clone_or_offers_to_clone_first_ac_122_29(tm
     assert missing["clone"] is None and missing["action"] == "clone"
 
 
-
 def test_clone_resolution_accepts_ssh_url_remotes(ready, tmp_path, monkeypatch):
     import subprocess
     from console import actions
@@ -521,9 +545,7 @@ def test_clone_resolution_accepts_ssh_url_remotes(ready, tmp_path, monkeypatch):
     assert actions.clone_of("acme/shop-api", repo_dir=gitops) == sibling
 
 
-
 def test_configured_workspace_keeps_accepting_fork_origins(ready, monkeypatch):
-    import subprocess
     from console import actions
 
     clone = ready.ws / "shop-api"
