@@ -261,7 +261,6 @@ def test_clone_resolution_checks_home_src_after_a_missing_sibling_without_worksp
 
 
 def test_clone_resolution_rejects_a_sibling_with_the_wrong_origin(ready, tmp_path, monkeypatch):
-    import subprocess
     from console import actions
 
     home = tmp_path / "home"
@@ -524,7 +523,6 @@ def test_choosing_a_system_opens_its_clone_or_offers_to_clone_first_ac_122_29(tm
 
 
 def test_clone_resolution_accepts_ssh_url_remotes(ready, tmp_path, monkeypatch):
-    import subprocess
     from console import actions
 
     home = tmp_path / "home"
