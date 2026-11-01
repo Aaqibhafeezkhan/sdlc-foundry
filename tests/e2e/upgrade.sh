@@ -372,6 +372,11 @@ credentials_files() { local f; for f in serviceaccount role rolebinding configma
 credentials_apply() { # namespace dir: applies the five credentials-*.yaml and waits for the Job (its logs on failure)
   local ns_=$1 d=$2 args=() f out job
   for f in $(credentials_files "$d"); do [ -f "$f" ] || fail "render did not write $f"; args+=(-f "$f"); done
+  # like Argo CD's hook-delete-policy BeforeHookCreation: the Job runs on every sync, also when its name is unchanged (a previous
+  # release that already rendered it, 5.5.0 on); without this an existing Job stays "unchanged" and nothing repairs #316 (AC-128.10)
+  job=$(awk '/^metadata:/{m=1} m && /^  name: /{print $2; exit}' "$d/credentials-job.yaml")
+  [ -n "$job" ] || fail "$d/credentials-job.yaml names no Job"
+  kn "$ns_" delete job "$job" --ignore-not-found --wait=true >/dev/null || fail "could not delete the credentials Job $job before its run"
   out=$(kn "$ns_" apply "${args[@]}" -o name) || fail "applying the credentials-*.yaml of $d failed"
   job=$(sed -n 's#^job.batch/##p' <<< "$out" | head -1)
   [ -n "$job" ] || fail "$d/credentials-job.yaml did not apply a Job"
@@ -558,7 +563,9 @@ apply_addons() { # env: every rendered addon of the environment
     fi
   done
   check_kept "$e" addons
-  check_servers "$e"
+  # the probe pods copy the component's Deployment: before apply_api created it (the setup on a release that already
+  # renders credentials Jobs, 5.5.0 on), apply_api checks the servers after its rollout instead
+  if kn "upg-$e" get deployments.apps/upg-api >/dev/null 2>&1; then check_servers "$e"; fi
 }
 apply_api() { # env: the overlay, then wait for the rollout and the answer through the Gateway
   local e=$1 out=""
@@ -567,6 +574,7 @@ apply_api() { # env: the overlay, then wait for the rollout and the answer throu
   kn "upg-$e" apply -k "$app_dir/overlays/$e/upg-api" 2>&1 | tee /dev/stderr >/dev/null || fail "applying overlays/$e/upg-api failed"
   check_kept "$e" overlays
   kn "upg-$e" rollout status deployments.apps/upg-api --timeout=300s 2>&1 | tee /dev/stderr >/dev/null || fail "upg-api did not become ready in $e (waited 300s)"
+  check_servers "$e"   # once per environment; a no-op when apply_addons already checked
   for _ in $(seq 1 30); do   # up to 90 s
     out=$(curl -s -m 5 "http://upg-api.upg-$e.localhost:$port/health" || true)
     case "$out" in *'"status":"ok"'*) echo "ok   upg-api answers in $e"; return 0;; esac
