@@ -6,6 +6,8 @@ Format: each section lists changes for a tagged release. Plugin and template ver
 
 ## [Unreleased]
 
+## [5.6.1] - 2026-11-03
+
 ### Fixed
 
 **A build no longer stops because `lint-fix` rewrote the acceptance tests (#367).** The tester committed the acceptance tests without running `lint-fix`, so the first `lint-fix` in Phase 2 applied ruff's autofixes to them (for example `timezone.utc` → `UTC`), `cplat spec test-diff` saw a changed statement and the build escalated. The tester agents of every shape now run `cplat quiet lint-fix` before they commit, and `/component:build` runs it once more before it records the RED commit, committing any change to the tests as `test(<slug>): lint-fix acceptance tests for <id>`. Update the plugins (`/plugin marketplace update`).
