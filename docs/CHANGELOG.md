@@ -6,6 +6,10 @@ Format: each section lists changes for a tagged release. Plugin and template ver
 
 ## [Unreleased]
 
+### Changed
+
+**The gitops template's CLAUDE.md says who creates `generate:` secrets.** It still named External Secrets Operator; since 5.5.0 a credentials Job (an Argo CD PreSync hook) creates them once (ADR-072). The text reaches gitops repos with `/platform:update`.
+
 ## [5.6.0] - 2026-11-01
 
 ### Fixed
@@ -14,7 +18,7 @@ Format: each section lists changes for a tagged release. Plugin and template ver
 
 **The gitops `upgrade-check` no longer crashes on a system with an external kustomize component (#340).** It loaded the base from a copy of `system.yaml` alone, so the component's kustomize package was missing there and building the error message raised a `ValueError`: every pull request of such a system had a red `upgrade-check`. The base is now the app directory at the base ref, external packages included, and the message works for paths outside the repo. Run `/platform:update` in an affected gitops repo.
 
-**The gitops secrets scan no longer flags the credentials Job's script (#341).** detect-secrets reported the `create.py` embedded in every rendered `credentials-configmap.yaml` (a cache, broker, bucket or generated component secret) as a secret, so the repo's `security` check turned red. It was a false positive: no credential value is rendered. The renderer now writes `create.py` as a YAML literal block whose header line carries `# pragma: allowlist secret`; `plan.json` and every other value are still scanned. The script itself is unchanged, so the Job names stay the same. A baseline entry added as a workaround can stay or be removed.
+**The gitops secrets scan no longer flags the credentials Job's script (#341).** detect-secrets reported the `create.py` embedded in every rendered `credentials-configmap.yaml` (a cache, broker, bucket or generated component secret) as a secret, so the repo's `security` check turned red. It was a false positive: no credential value is rendered. The renderer now writes `create.py` as a YAML literal block whose header line carries `# pragma: allowlist secret`; `plan.json` and every other value are still scanned. The script itself is unchanged, so the Job names stay the same. A baseline entry added as a workaround must be removed with the update (`devbox run secrets-baseline`): once the finding is gone, detect-secrets rewrites the stale entry and fails the `security` check.
 
 ## [5.5.0] - 2026-10-31
 
