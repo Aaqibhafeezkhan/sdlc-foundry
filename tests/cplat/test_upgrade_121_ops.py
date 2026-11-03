@@ -21,6 +21,7 @@ import pytest
 import yaml
 
 import cplat
+import release_support
 from broker_fixtures import broker, bsys
 from resources_fixtures import comp, db, system
 from system_fixtures import ROOT, git, write_system
@@ -571,6 +572,26 @@ def test_a_dropped_resource_major_fails_on_a_minor_release_naming_the_row_ac_121
     assert rows_check(root)[0] == 0
 
 
+DUP = "**`cluster add` checks the system before it opens a PR.** It reads system.yaml first (#263)."
+
+
+def test_a_section_that_repeats_a_paragraph_fails_naming_the_section_336(tmp_path):  # AC-121.23
+    """#336: a duplicated changelog entry (e.g. from a merge conflict) fails the rows check, in any section."""
+    root = release_world(tmp_path / "unreleased", "pass", changelog_with(f"{DUP}\n\nother\n\n{DUP}"))
+    rc, out = rows_check(root)
+    assert rc == 1 and re.search(r"(?m)^ERROR: docs/CHANGELOG\.md: \[Unreleased\]: \*\*`cluster add` .* repeats a paragraph$", out), out
+    root = release_world(tmp_path / "old", "pass", changelog_with("", {"5.4.0": f"{DUP}\n\n### Fixed\n\n{DUP}"}))
+    rc, out = rows_check(root)
+    assert rc == 1 and "[5.4.0]: **`cluster add`" in out, out
+
+
+def test_the_same_paragraph_in_two_sections_or_a_repeated_heading_passes_336(tmp_path):  # AC-121.23
+    """#336: only a repeat inside one section is a duplicate; `### Fixed` in two places is not."""
+    root = release_world(tmp_path, "pass", changelog_with(f"### Fixed\n\n{DUP}", {"5.4.0": f"### Fixed\n\n{DUP}"}))
+    rc, out = rows_check(root)
+    assert rc == 0, out
+
+
 def test_the_release_check_is_green_on_this_branch_ac_121_23():  # AC-121.23
     rc, out = run_script(ROOT, "release-check.py", "rows")   # base: the latest tag, as the CI job runs it (#294)
     assert rc == 0, out
@@ -606,7 +627,7 @@ def test_needs_upgrade_e2e_is_true_for_a_changed_row_a_release_heading_or_the_e2
     assert needs_e2e(root) == "run=true"
 
 
-@pytest.mark.parametrize("rel", ["tests/e2e/upgrade.sh", ".github/workflows/e2e-upgrade.yml", "scripts/cplat/upgrade.py", "scripts/cplat/upgradeverify.py", "scripts/cplat/update.py"])
+@pytest.mark.parametrize("rel", ["tests/e2e/upgrade.sh", "tests/e2e/lib/probe.sh", ".github/workflows/e2e-upgrade.yml", "scripts/cplat/upgrade.py", "scripts/cplat/upgradeverify.py", "scripts/cplat/update.py"])
 def test_needs_upgrade_e2e_is_true_when_an_e2e_file_changes_ac_121_24(tmp_path, rel):  # AC-121.24
     root = mini_platform(tmp_path)
     p = root / rel
@@ -682,7 +703,7 @@ def triggers(wf: dict) -> dict:
 
 
 E2E_PATHS = {"templates/gitops-app/scripts/render.py", "templates/gitops-app/scripts/local-cluster.sh", "scripts/cplat/upgrade*.py", "scripts/cplat/update.py",
-             "scripts/cplat/versions.py", "scripts/release-check.py", "tests/e2e/upgrade.sh", ".github/workflows/e2e-upgrade.yml", "docs/CHANGELOG.md"}
+             "scripts/cplat/versions.py", "scripts/release-check.py", "tests/e2e/upgrade.sh", "tests/e2e/lib/**", ".github/workflows/e2e-upgrade.yml", "docs/CHANGELOG.md"}
 
 
 def test_the_upgrade_e2e_workflow_has_the_designed_triggers_and_permissions_ac_121_24():  # AC-121.24
@@ -754,7 +775,7 @@ def need(text: str, *needles: str) -> None:
 def test_the_e2e_script_starts_from_the_previous_release_ac_121_24():  # AC-121.24 (needs a cluster)
     t = e2e()
     need(t, "E2E_UPGRADE_FROM", "v5.0.*", "scripts/cplat/versions.py", "git worktree add", 'fail "no previous release tag found (v5.0.*)"')
-    assert re.search(r"RESOURCE_TYPES", t) and re.search(r"PLANNED_TYPES", t) and re.search(r"\bast\b", t) and re.search(r"skip: \S+ is not in ", t)
+    assert re.search(r"RESOURCE_TYPES", t) and re.search(r"PLANNED_TYPES", t) and re.search(r"\bast\b", t) and re.search(r"skipped: \$why", t) and "(previous release has no $1)" in t   # #323
 
 
 def test_the_e2e_script_records_the_resolved_floating_references_ac_121_24():  # AC-121.24 (needs a cluster)
@@ -839,11 +860,9 @@ def description(path) -> str:
 
 
 def test_the_resource_platform_and_system_plugins_are_bumped_in_both_places_ac_121_6():  # AC-121.6
-    assert plugin_versions("resource") == ("1.6.1", "1.6.1")  # spec 127: 1.6.1
-    got = plugin_versions("platform")   # spec 121: platform plugin 1.3.0; spec 129 bumps it again
-    assert got[0] == got[1] and tuple(map(int, got[0].split("."))) >= (1, 3, 0)
-    system = plugin_versions("system")   # later specs bump system again; 1.5.0 is the bump of spec 121
-    assert system[0] == system[1] and tuple(map(int, system[0].split("."))) >= (1, 5, 0)
+    release_support.assert_bumped("resource", "1.6.0")   # spec 121: resource 1.6.0 (spec 127: 1.6.1; spec 132: >=)
+    release_support.assert_bumped("platform", "1.3.0")   # spec 121: platform plugin 1.3.0; spec 129 bumps it again
+    release_support.assert_bumped("system", "1.5.0")     # later specs bump system again; 1.5.0 is the bump of spec 121
 
 
 def test_the_upgrade_command_runs_cplat_with_pr_and_wait_ac_121_6():  # AC-121.6
@@ -909,15 +928,12 @@ def test_the_renderer_docstring_documents_the_version_the_archives_and_the_answe
 
 
 def test_the_changelog_lists_the_upgrade_entry_above_scaling_with_every_changed_row_ac_121_23():  # AC-121.23
-    text = read("docs/CHANGELOG.md")
-    sections = re.split(r"(?m)^(?=## \[)", text)
-    hits = [s for s in sections if s.startswith("## [") and re.search(r"(?i)spec 121|ADR-068", s)]
-    assert hits, "the change is listed"
-    assert re.match(r"## \[(Unreleased|5\.[1-9]\d*\.0)\]", hits[0].splitlines()[0])
-    entry = next(e for e in re.split(r"\n\s*\n", hits[0]) if re.search(r"(?i)spec 121|ADR-068", e))
+    section = release_support.section("5.4.0")   # spec 132: the minor release that shipped spec 121, found by its heading
+    entry = next((e for e in re.split(r"\n\s*\n", section) if re.search(r"(?i)spec 121|ADR-068", e)), None)
+    assert entry, "the change is listed"
     assert "BREAKING" not in entry
     for needle in ("ADR-068", "ADR-069", "/resource:upgrade", "property_operators", "1.6.1", "1.3.0", "1.5.0", "Versions", "Action", "/platform:update"):  # spec 127: resource 1.6.1
-        assert needle in hits[0], needle
-    assert re.search(r"(?i)spec 121", hits[0]).start() < re.search(r"(?i)spec 120", hits[0]).start(), "the 121 entry sits above the 120 entry"
+        assert needle in section, needle
+    assert re.search(r"(?i)spec 121", section).start() < re.search(r"(?i)spec 120", section).start(), "the 121 entry sits above the 120 entry"
     for line in ("- `argo-cd` v3.4.12 (new)", "- `k3s` v1.32.5-k3s1 (new)"):
-        assert line in hits[0].splitlines(), line
+        assert line in section.splitlines(), line

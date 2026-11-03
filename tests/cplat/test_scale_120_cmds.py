@@ -18,6 +18,7 @@ import pytest
 import yaml
 
 import cplat
+import release_support
 from cluster_fixtures import base, cluster_repo, render, render_ok, script, stubs, sys_doc, system_repo, write_cluster
 from resources_fixtures import APP, comp, platform_render_module, system
 from scale_fixtures import KEDA, METRICS, RES, cache, cache_system, cpu, expected_operator, lag, length, queue_system, sdoc
@@ -850,7 +851,8 @@ def test_the_e2e_script_cleans_up_the_scaling_objects_before_the_remaining_steps
 
 def test_the_e2e_script_header_budgets_the_scaling_steps_and_the_job_gets_90_minutes_ac_120_23():  # AC-120.23 (needs a cluster)
     assert re.search(r"(?is)(scal|keda).{0,400}13 minutes", e2e()[:9000])
-    assert re.search(r"(?m)^\s*timeout-minutes:\s*90\b", (ROOT / ".github" / "workflows" / "e2e.yml").read_text())
+    assert re.search(r"(?m)^\s*timeout-minutes:\s*(90\b|\$\{\{ matrix\.part == 'all' && 90 \|\| 45 \}\})",   # spec 134: 90 for the whole run
+                     (ROOT / ".github" / "workflows" / "e2e.yml").read_text())
 
 
 # ---------------- docs, changelog, plugins ----------------
@@ -963,13 +965,10 @@ def test_the_doctor_docs_list_the_keda_and_metrics_rows_ac_120_18():  # AC-120.1
 
 
 def test_the_changelog_lists_scaling_above_the_broker_in_a_minor_section_that_is_not_breaking_ac_120_25():  # AC-120.25
-    text = (ROOT / "docs" / "CHANGELOG.md").read_text()
-    sections = re.split(r"(?m)^(?=## \[)", text)
-    hits = [s for s in sections if s.startswith("## [") and re.search(r"(?i)spec 120|ADR-066", s)]
-    assert hits, "the change is listed"
-    assert re.match(r"## \[(Unreleased|5\.[1-9]\d*\.0)\]", hits[0].splitlines()[0])
-    entry = next(e for e in re.split(r"\n\s*\n", hits[0]) if re.search(r"(?i)spec 120|ADR-066", e))
+    section = release_support.section("5.4.0")   # spec 132: the minor release that shipped spec 120, found by its heading
+    entry = next((e for e in re.split(r"\n\s*\n", section) if re.search(r"(?i)spec 120|ADR-066", e)), None)
+    assert entry, "the change is listed"
     assert "BREAKING" not in entry
     for needle in ("2.19.0", "3.14.0", "resource_metrics", "ADR-066", "ADR-067", "1.3.0", "1.4.0", "1.2.0", "90"):
-        assert needle in hits[0], needle
-    assert re.search(r"(?i)spec 120", hits[0]).start() < re.search(r"(?i)spec 119", hits[0]).start(), "the 120 entry sits above the 119 entry"
+        assert needle in section, needle
+    assert re.search(r"(?i)spec 120", section).start() < re.search(r"(?i)spec 119", section).start(), "the 120 entry sits above the 119 entry"

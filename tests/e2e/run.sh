@@ -44,10 +44,31 @@
 # The system answers `property_operators: owner` (spec 121): this test installs External Secrets, Kyverno and LGTM itself, so the
 # renderer writes no operator Applications for them. Image pins carry tag and digest (spec 121); checks here compare via the versions table.
 #
-# Needs: docker (running), k3d, kubectl, uv, curl, copier (or uv). Env: E2E_KEEP=1 keeps the cluster, E2E_PORT, E2E_WORK.
+# Parts (spec 134, ADR-080): E2E_PART=all (the default, the nightly run) runs every step in this order. A pull request runs three parts in
+# parallel jobs, each on its own cluster: every part runs the shared setup (system, cluster up, images, addons, manifests, probes, secrets,
+# OTel, Kyverno, the external database and bucket, the caches), then `core` the bucket checks, the broker and the ship steps, `scaling` the
+# broker with the scaling steps inside it, `backups` the backup and restore steps. A block a part leaves out prints `==> skip [<part>] ...`.
+#
+# Needs: docker (running), k3d, kubectl, uv, curl, copier (or uv). Env: E2E_KEEP=1 keeps the cluster, E2E_PORT, E2E_WORK, E2E_PART.
 set -euo pipefail
 
+E2E_PART=${E2E_PART:-all}
+case "$E2E_PART" in
+  all|core|scaling|backups) ;;
+  *) echo "E2E FAIL: E2E_PART must be one of all core scaling backups (got $E2E_PART)" >&2; exit 1;;
+esac
+in_part() { # label part...: true when this run takes one of the parts (or all of them); otherwise prints the skip line
+  local label=$1 p
+  shift
+  [ "$E2E_PART" = all ] && return 0
+  for p in "$@"; do [ "$E2E_PART" = "$p" ] && return 0; done
+  echo; echo "==> skip [$E2E_PART] $label (parts: $*)"
+  return 1
+}
+
 root=$(cd "$(dirname "$0")/../.." && pwd)
+# shellcheck source=SCRIPTDIR/lib/probe.sh
+. "$root/tests/e2e/lib/probe.sh"   # probe_run: probe pods with a component's own variables (#323)
 work="${E2E_WORK:-$(mktemp -d)}"
 port="${E2E_PORT:-8099}"
 regport=5111
@@ -178,6 +199,7 @@ for svc in e2e-api e2e-web; do
   docker build -q -t "localhost:$regport/$svc:latest" "$work/$svc" >/dev/null
   docker push -q "localhost:$regport/$svc:latest" >/dev/null
 done
+if in_part "the broker images (e2e-natsprobe, e2e-worker)" core scaling; then
 # the broker steps probe with what a component uses (nats-py, spec 119): python:3.13-slim + nats-py, built from a Dockerfile on stdin
 printf 'FROM python:3.13-slim\nRUN pip install --no-cache-dir nats-py==2.16.0\n' | docker build -q -t "localhost:$regport/e2e-natsprobe:1" - >/dev/null
 docker push -q "localhost:$regport/e2e-natsprobe:1" >/dev/null
@@ -233,6 +255,7 @@ PY
 printf 'FROM localhost:%s/e2e-natsprobe:1\nCOPY worker.py /worker.py\nUSER 1000\nCMD ["python", "-u", "/worker.py"]\n' "$regport" > "$work/e2e-worker-ctx/Dockerfile"
 docker build -q -t "localhost:$regport/e2e-worker:latest" "$work/e2e-worker-ctx" >/dev/null
 docker push -q "localhost:$regport/e2e-worker:latest" >/dev/null
+fi  # end part
 
 step "Describe the components like /component:add does (into components: of system.yaml) and render the manifests"
 (cd "$work/e2e-gitops" && uv run --with pyyaml --with ruamel.yaml python - "$root" "$registry:$regport" <<'PY'
@@ -442,31 +465,15 @@ case "$out" in *"platform-guardrails"*) echo "ok   denied: $(echo "$out" | tr '\
 
 # ---- The bucket: probes from inside the cluster with the components' own variables ----
 S3_IMAGE=amazon/aws-cli:2.22.35
-read -r -d '' s3_pod_py <<'PY' || true
-import json, re, sys
-name, image, script = sys.argv[1:4]
-dep = json.load(sys.stdin)
-env = [e for e in dep["spec"]["template"]["spec"]["containers"][0].get("env", []) if "valueFrom" in e and re.match(r"(S3|AWS)_", e["name"])]
-env += [{"name": k, "value": v} for k, v in (("AWS_PAGER", ""), ("AWS_EC2_METADATA_DISABLED", "true"), ("HOME", "/tmp"),
-                                             ("AWS_REQUEST_CHECKSUM_CALCULATION", "when_required"), ("AWS_RESPONSE_CHECKSUM_VALIDATION", "when_required"))]
-print(json.dumps({"apiVersion": "v1", "kind": "Pod", "metadata": {"name": name, "labels": {"app": "s3probe"}},
-                  "spec": {"restartPolicy": "Never", "containers": [{"name": "aws", "image": image, "command": ["sh", "-c", script], "env": env}]}}))
-PY
+s3env=(-e AWS_PAGER= -e AWS_EC2_METADATA_DISABLED=true -e HOME=/tmp -e AWS_REQUEST_CHECKSUM_CALCULATION=when_required
+       -e AWS_RESPONSE_CHECKSUM_VALIDATION=when_required)
 # S3_FORCE_PATH_STYLE (from the Secret, as the component sees it) decides the addressing style
 s3pre='set -e; [ "$S3_FORCE_PATH_STYLE" = true ] && aws configure set default.s3.addressing_style path; A="aws --endpoint-url $S3_ENDPOINT"; '
-s3n=0
 s3run() { # namespace deployment script: runs it in a pod that carries the deployment's S3_* and AWS_* variables; output in S3_OUT
-  local ns_=$1 dep=$2 name phase=""
-  s3n=$((s3n + 1)); name="s3probe-$s3n"
-  kn "$ns_" get deploy "$dep" -o json | python3 -c "$s3_pod_py" "$name" "$S3_IMAGE" "$s3pre$3" | kn "$ns_" apply -f - >/dev/null || fail "could not start the probe pod $name"
-  for _ in $(seq 1 60); do   # up to 180 s (the first run pulls the image)
-    phase=$(kn "$ns_" get pod "$name" -o jsonpath='{.status.phase}' 2>/dev/null || true)
-    case "$phase" in Succeeded|Failed) break;; esac; sleep 3
-  done
-  S3_OUT=$(kn "$ns_" logs "$name" 2>&1 || true)
-  [ "$phase" = Succeeded ] || S3_OUT="$S3_OUT (pod phase: ${phase:-unknown}; $(kn "$ns_" get pod "$name" -o jsonpath='{.status.containerStatuses[*].state.waiting.reason}' 2>/dev/null))"
-  kn "$ns_" delete pod "$name" --wait=false >/dev/null 2>&1 || true
-  [ "$phase" = Succeeded ]
+  local rc=0   # up to 180 s (the first run pulls the image)
+  probe_run -k "kn $1" -d "$2" -i "$S3_IMAGE" -m '(S3|AWS)_' -l s3probe -F fail "${s3env[@]}" "$s3pre$3" || rc=$?
+  S3_OUT=$PROBE_OUT
+  return $rc
 }
 s3_why() { case "$1" in
   *AccessDenied*|*InvalidAccessKeyId*|*SignatureDoesNotMatch*|*Forbidden*|*"(403)"*) echo "access denied";;
@@ -486,6 +493,7 @@ s3_same() { # label want got
 }
 H=probe/hello.txt
 
+if in_part "bucket checks (read and write, versioning, the store's pods restarted, re-sync)" core; then
 step "Bucket: e2e-api writes an object through its variables and reads back the same bytes (AC-116.14, AC-128.7)"
 wait_secret_age $ns e2e-files-app 60   # AC-128.7: the keys of the Secret work 60 s after it exists
 s3_retry 12 "bucket e2e-files is not reachable from e2e-api in dev" $ns e2e-api '$A s3api head-bucket --bucket "$S3_BUCKET"'
@@ -569,6 +577,7 @@ echo "OLD=$(cat /tmp/old)"'
 s3_same "object after the re-sync" "$payload" "$(s3_field CONTENT)"
 s3_same "old version after the re-sync" one "$(s3_field OLD)"
 echo "ok   the re-synced bucket keeps its keys, the object and the old version"
+fi  # end part
 
 step "External database: a store entry without password creates no Secret and the ExternalSecret reports the key"
 # ext-db is external in every environment; the ExternalSecret <system>-ext-db-app lands in the overlay of the first
@@ -787,31 +796,12 @@ routes=$(kc get httproutes.gateway.networking.k8s.io -o name | grep -E 'sessions
 echo "ok   e2e-sessions and e2e-ratelimit are ClusterIP Services on 6379; no HTTPRoute names a cache"
 
 # probe pods (plain Pods, not Deployments: the guard rails do not cover them) with e2e-web's own cache variables, in the cache's Valkey image
-read -r -d '' cache_pod_py <<'PY' || true
-import json, re, sys
-name, image, script = sys.argv[1:4]
-dep = json.load(sys.stdin)
-env = [e for e in dep["spec"]["template"]["spec"]["containers"][0].get("env", []) if "valueFrom" in e and re.match(r"(SESSIONS|RATELIMIT)_REDIS_", e["name"])]
-ctx = {"allowPrivilegeEscalation": False, "readOnlyRootFilesystem": True, "capabilities": {"drop": ["ALL"]}}
-print(json.dumps({"apiVersion": "v1", "kind": "Pod", "metadata": {"name": name, "labels": {"app": "cacheprobe"}},
-                  "spec": {"restartPolicy": "Never",
-                           "securityContext": {"runAsNonRoot": True, "runAsUser": 999, "runAsGroup": 999, "seccompProfile": {"type": "RuntimeDefault"}},
-                           "containers": [{"name": "valkey", "image": image, "command": ["sh", "-c", script], "env": env, "securityContext": ctx}]}}))
-PY
 cache_image=$(kc get statefulsets.apps e2e-sessions -o jsonpath='{.spec.template.spec.containers[0].image}')
-cn=0
 crun() { # script: runs it in a pod that carries e2e-web's SESSIONS_REDIS_* and RATELIMIT_REDIS_* variables; output in C_OUT
-  local name phase=""
-  cn=$((cn + 1)); name="cacheprobe-$cn"
-  kc get deploy e2e-web -o json | python3 -c "$cache_pod_py" "$name" "$cache_image" "set -e; $1" | kc apply -f - >/dev/null || cfail "could not start the probe pod $name"
-  for _ in $(seq 1 60); do   # up to 180 s
-    phase=$(kc get pod "$name" -o jsonpath='{.status.phase}' 2>/dev/null || true)
-    case "$phase" in Succeeded|Failed) break;; esac; sleep 3
-  done
-  C_OUT=$(kc logs "$name" 2>&1 || true)
-  [ "$phase" = Succeeded ] || { C_OUT="$C_OUT (pod phase: ${phase:-unknown}; $(kc get pod "$name" -o jsonpath='{.status.containerStatuses[*].state.waiting.reason}' 2>/dev/null))"; kc describe pod "$name" | tail -15; }
-  kc delete pod "$name" --wait=false >/dev/null 2>&1 || true
-  [ "$phase" = Succeeded ]
+  local rc=0   # up to 180 s
+  probe_run -k kc -d e2e-web -i "$cache_image" -m '(SESSIONS|RATELIMIT)_REDIS_' -u 999 -l cacheprobe -F cfail -v "set -e; $1" || rc=$?
+  C_OUT=$PROBE_OUT
+  return $rc
 }
 c_field() { sed -n "s/^$1=//p" <<< "$C_OUT" | head -1; }
 
@@ -921,6 +911,7 @@ sys.exit(1 if bad else 0)
 PY
 echo "ok   platform doctor lists no row for a cache"
 
+if in_part "the broker (spec 119)" core scaling; then
 # ---- A message broker (spec 119): NATS JetStream in dev, two events APIs, probes with the components' own variables ----
 # The component overlays are not applied: the probe pods take their variables from the rendered Deployments (kubectl kustomize), so no live
 # workload depends on the broker. At the end the e2e unbinds and deletes the broker by hand, so the ship and backup steps run as before.
@@ -1132,29 +1123,12 @@ echo "ok   Secrets with url nats://e2e-bus.e2e-dev.svc:4222, user and a 32-chara
 
 # probe pods (plain Pods, not Deployments: the guard rails do not cover them) with the rendered variables of a component, in the nats-py image
 nats_image="$registry:$regport/e2e-natsprobe:1"
-read -r -d '' nats_pod_py <<'PY' || true
-import json, sys
-name, image, script, envfile = sys.argv[1:5]
-env = json.load(open(envfile)) + [{"name": k, "value": v} for k, v in (("PYTHONDONTWRITEBYTECODE", "1"), ("PYTHONUNBUFFERED", "1"), ("HOME", "/tmp"))]
-ctx = {"allowPrivilegeEscalation": False, "readOnlyRootFilesystem": True, "capabilities": {"drop": ["ALL"]}}
-print(json.dumps({"apiVersion": "v1", "kind": "Pod", "metadata": {"name": name, "labels": {"app": "natsprobe"}},
-                  "spec": {"restartPolicy": "Never",
-                           "securityContext": {"runAsNonRoot": True, "runAsUser": 1000, "runAsGroup": 1000, "seccompProfile": {"type": "RuntimeDefault"}},
-                           "containers": [{"name": "probe", "image": image, "command": ["python", "-c", script], "env": env, "securityContext": ctx}]}}))
-PY
-nn=0
 nrun() { # component script: runs it in a pod that carries the component's NATS_* and EVENTS_* variables; output in N_OUT
-  local name phase=""
-  nn=$((nn + 1)); name="natsprobe-$nn"
-  python3 -c "$nats_pod_py" "$name" "$nats_image" "$2" "$work/natsenv-$1.json" | kc apply -f - >/dev/null || nfail "could not start the probe pod $name"
-  for _ in $(seq 1 90); do   # up to 180 s
-    phase=$(kc get pod "$name" -o jsonpath='{.status.phase}' 2>/dev/null || true)
-    case "$phase" in Succeeded|Failed) break;; esac; sleep 2
-  done
-  N_OUT=$(kc logs "$name" 2>&1 || true)
-  [ "$phase" = Succeeded ] || { N_OUT="$N_OUT (pod phase: ${phase:-unknown}; $(kc get pod "$name" -o jsonpath='{.status.containerStatuses[*].state.waiting.reason}' 2>/dev/null))"; kc describe pod "$name" | tail -15; }
-  kc delete pod "$name" --wait=false >/dev/null 2>&1 || true
-  [ "$phase" = Succeeded ]
+  local rc=0   # up to 180 s
+  probe_run -k kc -f "$work/natsenv-$1.json" -i "$nats_image" -c python -u 1000 -l natsprobe -w 90:2 -F nfail -v \
+    -e PYTHONDONTWRITEBYTECODE=1 -e PYTHONUNBUFFERED=1 -e HOME=/tmp "$2" || rc=$?
+  N_OUT=$PROBE_OUT
+  return $rc
 }
 n_field() { sed -n "s/^$1=//p" <<< "$N_OUT" | head -1; }
 n_must() { nrun "$1" "$2" || nfail "the probe of $1 failed: $(echo "$N_OUT" | tail -8 | tr '\n' ' ' | cut -c1-600)"; }
@@ -1346,6 +1320,7 @@ sys.exit(1 if bad else 0)
 PY
 echo "ok   platform doctor: operator nack (0.24.0) and broker bus (dev) (nats chart 2.15.1, nats:2.15.2-alpine) are ok"
 
+if in_part "scaling (spec 120)" scaling; then
 # ---- Scaling (spec 120): the queue-triggered consumer e2e-worker (KEDA) and a CPU autoscaler, against the running broker ----
 # Everything is applied without Argo CD, the way its sync would: the rendered files, the HelmChart for the broker, KEDA's objects by their full
 # kind names. Probes connect with the variables of the component they stand for. The time budget is in the header.
@@ -1820,30 +1795,11 @@ if grep -rqF -e "$pw_cache" -e "$pw_bus" "$(ovd e2e-worker)"; then sfail "a pass
 live_scalers=$(kc get scaledobjects.keda.sh,triggerauthentications.keda.sh -o yaml)
 if grep -qF -e "$pw_cache" -e "$pw_bus" <<< "$live_scalers"; then sfail "a password is in the live ScaledObject or TriggerAuthentication"; fi
 # the probe connects like the component: a Valkey client with the component's own REDIS_HOST, REDIS_PORT and REDIS_PASSWORD (e2e-worker's Deployment)
-read -r -d '' wcache_pod_py <<'PY' || true
-import json, sys
-name, image, script = sys.argv[1:4]
-dep = json.load(sys.stdin)
-env = [e for e in dep["spec"]["template"]["spec"]["containers"][0].get("env", []) if "valueFrom" in e and e["name"].startswith("REDIS_")]
-ctx = {"allowPrivilegeEscalation": False, "readOnlyRootFilesystem": True, "capabilities": {"drop": ["ALL"]}}
-print(json.dumps({"apiVersion": "v1", "kind": "Pod", "metadata": {"name": name, "labels": {"app": "cacheprobe"}},
-                  "spec": {"restartPolicy": "Never",
-                           "securityContext": {"runAsNonRoot": True, "runAsUser": 999, "runAsGroup": 999, "seccompProfile": {"type": "RuntimeDefault"}},
-                           "containers": [{"name": "valkey", "image": image, "command": ["sh", "-c", script], "env": env, "securityContext": ctx}]}}))
-PY
-wn=0
 wcrun() { # script: runs it in a pod that carries e2e-worker's REDIS_* variables; output in C_OUT
-  local name phase=""
-  wn=$((wn + 1)); name="cacheprobe-w$wn"
-  kc get deployments.apps e2e-worker -o json | python3 -c "$wcache_pod_py" "$name" "$cache_image" "set -e; $1" | kc apply -f - >/dev/null || sfail "could not start the probe pod $name"
-  for _ in $(seq 1 60); do   # up to 180 s
-    phase=$(kc get pod "$name" -o jsonpath='{.status.phase}' 2>/dev/null || true)
-    case "$phase" in Succeeded|Failed) break;; esac; sleep 3
-  done
-  C_OUT=$(kc logs "$name" 2>&1 || true)
-  [ "$phase" = Succeeded ] || { C_OUT="$C_OUT (pod phase: ${phase:-unknown})"; kc describe pod "$name" | tail -15; }
-  kc delete pod "$name" --wait=false >/dev/null 2>&1 || true
-  [ "$phase" = Succeeded ]
+  local rc=0   # up to 180 s
+  probe_run -k kc -d e2e-worker -i "$cache_image" -m 'REDIS_' -u 999 -l cacheprobe -F sfail -v "set -e; $1" || rc=$?
+  C_OUT=$PROBE_OUT
+  return $rc
 }
 rcli='valkey-cli --no-auth-warning -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD"'
 wcrun "$rcli RPUSH jobs \$(seq 1 30) >/dev/null; echo LEN=\$($rcli LLEN jobs)" || sfail "the cache probe could not push 30 entries to the list jobs: $C_OUT"   # 30 entries, length 10 each: 3 replicas
@@ -1925,6 +1881,9 @@ left=$(kc get deployments.apps,services,scaledobjects.keda.sh,triggerauthenticat
 jsz_wait 15 S.e2e-orders.messages=3 || { echo "$J"; sfail "after the clean-up /jsz should still show e2e-orders with its 3 messages"; }
 broker_t0=$((broker_t0 + SECONDS - scaling_t0))   # the broker steps' own budget does not count the scaling steps
 sok "jobs, e2e-worker and operators/apps/keda.yaml are removed; the render named the retired stream e2e-jobs and consumer e2e-worker; the scaling steps took $((SECONDS - scaling_t0)) s in total (budget 780 s)"
+fi  # end part
+# the scaling steps start and end on a clean tree; without them the broker steps may leave the rendered files uncommitted
+[ -z "$(git -C "$gitops_repo" status --porcelain)" ] || commit "before the broker removal"
 
 nstep "Broker: resource remove bus is refused while the events APIs orders and audit are bound (AC-119.4)"
 [ -z "$(git -C "$gitops_repo" status --porcelain)" ] || nfail "the tree is dirty before the removal"
@@ -1991,7 +1950,9 @@ for j in $(kc get jobs.batch -o name 2>/dev/null | grep -E 'e2e-bus-credentials'
 left=$(kc get statefulsets.apps,persistentvolumeclaims,secrets,externalsecrets.external-secrets.io,streams.jetstream.nats.io,consumers.jetstream.nats.io,accounts.jetstream.nats.io -o name 2>/dev/null | grep -E 'e2e-bus|e2e-orders|e2e-audit' || true)
 [ -z "$left" ] || nfail "objects of the broker are still in e2e-dev: $left"
 echo "ok   bus is removed from system.yaml (nack.yaml and addons/dev/bus are gone) and deleted from the cluster; the broker steps took $((SECONDS - broker_t0)) s (budget 300 s)"
+fi  # end part
 
+if in_part "the ship steps (verify dev, promote to staging, the staging bucket)" core; then
 # ---- Ship a spec: dev is verified, the build is promoted to staging, applied and verified, the run ends ----
 sns=e2e-staging
 dev_url="http://e2e-api.e2e-dev.localhost:$port"
@@ -2064,7 +2025,9 @@ esac
 
 step "End the ship run"
 (cd "$api_repo" && $cplat component ship finish)
+fi  # end part
 
+if in_part "backups and restores (spec 117)" backups; then
 # ---- Backups (AC-117.24): dev backs up postgres and the namespace into the bucket backups; a point-in-time restore and an environment restore ----
 # These steps come last on purpose: restoring changes dev's database cluster and replaces volumes, which the ship steps above must not see.
 bstep_name=""
@@ -2253,28 +2216,13 @@ case "$out" in *"restored postgres/dev to $T as e2e-postgres-g1"*) ;; *) bfail "
 echo "ok   point-in-time restore to $T: $(echo "$out" | head -1)"
 
 # a probe pod (not a Deployment: the guard rails do not cover it) with e2e-api's own database variables
-read -r -d '' db_pod_py <<'PY' || true
-import json, sys
-name, image, script = sys.argv[1:4]
-dep = json.load(sys.stdin)
-names = ("DATABASE_URL", "PGHOST", "PGPORT", "PGDATABASE", "PGUSER", "PGPASSWORD")
-env = [e for e in dep["spec"]["template"]["spec"]["containers"][0].get("env", []) if "valueFrom" in e and e["name"] in names]
-print(json.dumps({"apiVersion": "v1", "kind": "Pod", "metadata": {"name": name, "labels": {"app": "dbprobe"}},
-                  "spec": {"restartPolicy": "Never", "containers": [{"name": "psql", "image": image, "command": ["sh", "-c", script], "env": env}]}}))
-PY
-dbn=0
 db_rows() { # reads the table e2e_rows with e2e-api's database variables; the rows in DB_OUT, one line
-  local name phase="" image
-  dbn=$((dbn + 1)); name="dbprobe-$dbn"
+  local image rc=0   # up to 180 s (the first run pulls the image)
   image=$(kc get clusters.postgresql.cnpg.io e2e-postgres-g1 -o jsonpath='{.spec.imageName}')
-  kc get deploy e2e-api -o json | python3 -c "$db_pod_py" "$name" "$image" 'psql "$DATABASE_URL" -tAc "select v from e2e_rows order by v"' | kc apply -f - >/dev/null || bfail "could not start the probe pod $name"
-  for _ in $(seq 1 60); do   # up to 180 s (the first run pulls the image)
-    phase=$(kc get pod "$name" -o jsonpath='{.status.phase}' 2>/dev/null || true)
-    case "$phase" in Succeeded|Failed) break;; esac; sleep 3
-  done
-  DB_OUT=$(kc logs "$name" 2>&1 | tr '\n' ' ' | sed 's/ *$//' || true)
-  kc delete pod "$name" --wait=false >/dev/null 2>&1 || true
-  [ "$phase" = Succeeded ]
+  probe_run -k kc -d e2e-api -i "$image" -m '(DATABASE_URL|PGHOST|PGPORT|PGDATABASE|PGUSER|PGPASSWORD)$' -l dbprobe -F bfail \
+    'psql "$DATABASE_URL" -tAc "select v from e2e_rows order by v"' || rc=$?
+  DB_OUT=$(printf '%s\n' "$PROBE_OUT" | tr '\n' ' ' | sed 's/ *$//')
+  return $rc
 }
 
 bstep "Database switch: a component reads the restored row A and not B (AC-117.9)"
@@ -2363,3 +2311,4 @@ bstep "Environment restore: the database cluster was not touched (same UID)"
 [ "$(kc get clusters.postgresql.cnpg.io e2e-postgres-g1 -o jsonpath='{.metadata.uid}')" = "$db_uid" ] || bfail "the UID of the cluster e2e-postgres-g1 changed: environment restores must leave databases alone"
 [ "$(kc get clusters.postgresql.cnpg.io e2e-postgres-g1 -o jsonpath='{.status.phase}')" = "Cluster in healthy state" ] || bfail "the Postgres cluster e2e-postgres-g1 is not healthy after the environment restore"
 echo "ok   e2e-postgres-g1 kept its UID $db_uid"
+fi  # end part

@@ -12,6 +12,7 @@ import sys
 
 import pytest
 import yaml
+import release_support
 
 from cluster_fixtures import ORG, ROOT, TEMPLATE, cluster_repo, render, script
 from system_fixtures import mod
@@ -129,8 +130,9 @@ def test_ac_125_16_the_e2e_workflow_runs_the_cluster_script():  # AC-125.16
     job = wf["jobs"]["e2e-cluster"]
     assert job["name"] == "e2e cluster (two systems, one operator)" and job["timeout-minutes"] == 20
     assert any("bash tests/e2e/cluster.sh" in (step.get("run") or "") for step in job["steps"])
-    on = wf.get("on") or wf.get(True)
-    assert "templates/cluster-gitops/**" in on["pull_request"]["paths"]
+    # spec 134: no PR paths filter; scripts/e2e-scope.py decides, and a cluster-gitops change runs the e2e
+    rule = (ROOT / "scripts" / "e2e-scope.py").read_text()
+    assert 'TEMPLATES = ("templates/gitops-app/", "templates/cluster-gitops/")' in rule
     assert "e2e" in wf["jobs"], "the existing job stays"
 
 
@@ -285,12 +287,7 @@ def test_ac_125_18_adr_060_records_the_decision_and_amends_adr_058():  # AC-125.
 
 
 def test_ac_125_18_the_changelog_announces_a_non_breaking_minor():  # AC-125.18
-    t = read(DOCS / "CHANGELOG.md")
-    # the first section that lists spec 125: [Unreleased] until a release moves it under 5.x.0
-    hits = [s for s in re.split(r"\n(?=## \[)", t) if s.startswith("## [") and "spec 125" in s]
-    assert hits, "the change is listed"
-    section = hits[0]
-    assert re.match(r"## \[(Unreleased|5\.[1-9]\d*\.0)\]", section.splitlines()[0])
+    section = release_support.section("5.2.0")   # spec 132: the minor release that shipped spec 125, found by its heading
     assert "cluster" in section.lower() and "`cluster` 1.0.0" in section and "ADR-060" in section and "spec 125" in section
     block = section[section.lower().index("a cluster repo hosts several systems"):]
     assert "BREAKING" not in block.split("\n**Resources are named", 1)[0]

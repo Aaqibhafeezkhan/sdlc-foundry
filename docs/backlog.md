@@ -125,6 +125,7 @@ Items specified in the PRD but not built are listed after the table, so the gaps
 | [129-a-platform-release-command](specs/129-a-platform-release-command/spec.md) — A platform release command | P1 | done | 21 | #296 |
 | [130-quality-gates-fail-when-they-checked](specs/130-quality-gates-fail-when-they-checked/spec.md) — Quality gates fail when they checked nothing | P1 | done | 16 | #285 |
 | [131-runs-that-finish-on-their-own](specs/131-runs-that-finish-on-their-own/spec.md) — Runs that finish on their own | P1 | done | 19 | #324 |
+| [134-a-pr-runs-only-the-e2e-it-needs](specs/134-a-pr-runs-only-the-e2e-it-needs/spec.md) — A pull request runs only the e2e it needs, and that e2e runs in parallel parts | P1 | done | 9 | #281 |
 | [005-report-a-platform-problem-without](specs/005-report-a-platform-problem-without/spec.md) — Report a platform problem without leaking secrets | P2 | done | 3 |  |
 | [026-guard-rails-before-merge-and-in-the](specs/026-guard-rails-before-merge-and-in-the/spec.md) — Guard rails before merge and in the cluster | P2 | done | 2 |  |
 | [036-plans-are-approved-before-they-are-built](specs/036-plans-are-approved-before-they-are-built/spec.md) — Plans are approved before they are built | P2 | superseded | 4 |  |
@@ -144,6 +145,8 @@ Items specified in the PRD but not built are listed after the table, so the gaps
 | [122-a-local-console-shows-the-system-and-what](specs/122-a-local-console-shows-the-system-and-what/spec.md) — A local console shows the system, its process and what needs you | P2 | done | 52 |  |
 | [124-autonomy-is-declared-per-environment-and](specs/124-autonomy-is-declared-per-environment-and/spec.md) — Autonomy is declared per environment and supervised in the console | P2 | done | 22 |  |
 | [127-the-cache-url-names-its-user-and-ci-pins](specs/127-the-cache-url-names-its-user-and-ci-pins/spec.md) — the cache URL names its user and CI pins its test tools | P2 | done | 6 |  |
+| [132-changelog-fragments-that-the-release](specs/132-changelog-fragments-that-the-release/spec.md) — Changelog fragments that the release assembles | P2 | done | 13 | #321 |
+| [133-build-prs-show-how-they-were-built](specs/133-build-prs-show-how-they-were-built/spec.md) — Build PRs show how they were built | P2 | done | 13 | #338 |
 <!-- spec-index:end -->
 
 ## Not built (specified in the PRD, absent from the code)
