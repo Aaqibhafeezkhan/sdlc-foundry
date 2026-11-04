@@ -5,6 +5,7 @@ outside goes through `esc` before it is put in markup. The attribute names here 
 and the acceptance tests rely on:
 
   esc(text)                                       escape text and attribute values
+  money(value)                                    an amount with at most two decimals
   command_block(cmd)                              <code data-command> plus a <button data-copy>
   action_button(kind, label, key, disabled_reason)  <button data-action aria-keyshortcuts> with <kbd>, or a disabled one with its reason
   stage_badge(stage)                              <span data-stage> whose text is the stage name
@@ -35,6 +36,11 @@ def short_version(version: object) -> str:
     text = "" if version is None else str(version)
     found = re.fullmatch(r"(?:sha-)?([0-9a-f]{40})", text)
     return f"sha-{found.group(1)[:7]}" if found else text
+
+
+def money(value: object) -> str:
+    """An amount with at most two decimals: 33.7487 shows as 33.75, 60 as 60."""
+    return f"{value:.2f}".rstrip("0").rstrip(".") if isinstance(value, (int, float)) else str(value)
 
 
 def _attrs(attrs: Mapping[str, object] | None) -> str:
@@ -102,22 +108,41 @@ def freshness(read_at: str | datetime | None, now: datetime | None = None, *, st
     return f'<time class="read-at" data-read-at="{esc(iso)}" datetime="{esc(iso)}"{mark}>{esc(shown)}{word}</time>'
 
 
+SOURCE_LABELS = {
+    "needs": "The list of open decisions",
+    "runs": "The run records",
+    "status": "The system status",
+    "model": "The system model",
+    "autonomy": "The autonomy state",
+}
+
+
+def source_label(source: str) -> str:
+    """What a source holds, in words; `specs:<repo>` names its repo, an unknown source keeps its name."""
+    if source.startswith("specs:"):
+        return f"The specs of {source[len('specs:'):]}"
+    return SOURCE_LABELS.get(source, source)
+
+
 def unavailable(source: str, since: str | datetime | None, error: str | None) -> str:
     """A part whose source cannot be read: the error, `unknown` instead of health, and a retry button (AC-122.42)."""
     since_iso = esc(since.isoformat() if isinstance(since, datetime) else since)
     return (f'<section class="unavailable" data-source="{esc(source)}" data-unavailable-since="{since_iso}">'
-            f'<h3>{esc(source)} is not available</h3>'
+            f'<h3>{esc(source_label(source))} is not available <code class="source-name">{esc(source)}</code></h3>'
             f'<p class="error">{esc(error or "no answer")}</p>'
-            f'<p>Health: <span class="health">unknown</span>. Showing nothing newer than {since_iso or "the start"}.</p>'
+            f'<p>Health: <span class="health">unknown</span>. Showing nothing newer than {since_iso or "the start"}. '
+            'The rest of the page still works; if this keeps failing, run <code>/platform:doctor</code>.</p>'
             '<button type="button" class="btn" data-action="retry-source">Retry now</button></section>')
 
 
 def table(rows: Sequence[Sequence[object]], cols: Sequence[str], *, caption: str | None = None,
-          row_attrs: Sequence[str] | None = None) -> str:
+          row_attrs: Sequence[str] | None = None, after_head: Mapping[str, str] | None = None) -> str:
     """A table in a box that scrolls sideways (AC-122.28). `cols` are plain-text headings (escaped);
     each cell of `rows` is HTML, so the caller escapes with `esc` or builds it with the fragments above.
-    `row_attrs[i]` is ready-made, already escaped attribute text for the i-th `<tr>`."""
-    head = "".join(f'<th scope="col">{esc(c)}</th>' for c in cols)
+    `row_attrs[i]` is ready-made, already escaped attribute text for the i-th `<tr>`; `after_head[col]` is HTML put after
+    that heading (a glossary tip)."""
+    extra = after_head or {}
+    head = "".join(f'<th scope="col">{esc(c)}{extra.get(c, "")}</th>' for c in cols)
     body = "".join(f"<tr{' ' + row_attrs[i] if row_attrs else ''}>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>"
                    for i, row in enumerate(rows))
     cap = f"<caption>{esc(caption)}</caption>" if caption else ""

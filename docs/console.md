@@ -44,9 +44,9 @@ Nothing runs before you click the button (or press its key: `a` approve, `p` pro
 
 ### Board: where every change is
 
-![The Board: one column per stage, a stopped run with its reason](img/console/board.jpg)
+![The Board: the stage strip with its counts (red: a run stopped there), the card colours, and each stage as a row](img/console/board.jpg)
 
-One column per stage, from **Issue** to **Prod**; every open item sits in exactly one. **Spec**, **Build** and **Prod** are decision columns. Select a column header to see what happens in that stage, which agents work there, the commands, and what you decide. A run card shows its budget used of its limit, and a stopped run says why in one line.
+A strip on top shows the eight stages from **Issue** to **Prod** with the number of items in each (a stage with a stopped run is red); select one to jump to it. Below, each stage is a row and every open item sits in exactly one; the cards of a stage wrap, so nothing scrolls sideways, and an empty stage is one slim line. **Spec**, **Build** and **Prod** are decision stages ("you decide"). Select a stage name to see what happens in that stage, which agents work there, the commands, and what you decide. Arrow keys move between cards: left and right inside a stage, up and down to the next stage with cards. A run card shows its budget used of its limit, and a stopped run says why in one line.
 
 Open a card for its detail: the stage strip, one line per repo slice, every acceptance criterion with its test and verdict, the evidence chain from issue to running instance (pull request, CI, image, instance), and the latest activity. A stopped run explains itself: why it stopped, the failing test and its criterion, the last error and the diagnosis, and the ways forward (take over in Claude Code, more budget, amend the spec).
 
@@ -56,11 +56,13 @@ Open a card for its detail: the stage strip, one line per repo slice, every acce
 
 ### System: what it is made of and where it runs
 
-![System: versions and states per environment, promote in place, parts and relations](img/console/system.jpg)
+![System as a tree: a component opened for its repo and relations, versions and states per environment, promote in place](img/console/system.jpg)
 
-**Where it runs** has one row per component and resource and one column per environment with its promotion rule and policy. A cell shows the running version and its state: `pinned`, `healthy`, `verified` (smoke passed), `NOT VERIFIED`, `alert`, or `unknown` when the cluster cannot be read. A verified cell before a manual environment offers **Promote**, and a verified version newer than the last release offers **Cut release**; both open the decision with its consequence first.
+The page shows the system as one tree: **Components**, **Libraries**, **Resources** and **APIs**, each item a row. A component or resource row has one column per environment, headed by its promotion rule and policy. A cell shows the running version and its state: `pinned`, `healthy`, `verified` (smoke passed), `NOT VERIFIED`, `alert`, or `unknown` when the cluster cannot be read; a legend under the table explains each one. A verified cell before a manual environment offers **Promote**, and a verified version newer than the last release offers **Cut release**; both open the decision with its consequence first.
 
-Below are the components, libraries, APIs and resources with their relations, and **Add to the model**: forms for a component, an API (`/component:add|set --provides|--consumes`), a resource, environment rules (`/system:set --env`) and a new system. Each change previews the exact command, the `system.yaml` diff and the renderer's checks on a scratch copy before anything runs; an invalid value names the key and the rule.
+Open a row with its arrow for its repo, the APIs it provides and consumes, the resources it uses and the changes it offers. Every change starts where its item is: **+ Add component**, **+ Add resource** and **+ Add API** on their group, **Remove** and **Change APIs** in a row, **Change rules** on an environment, **New system** next to the system name. The form opens at the right edge, filled in, with selection lists for what already exists (`/component:add|remove`, `/component:set --provides|--consumes`, `/resource:add|remove`, `/system:set --env`, `/system:new`). Each change previews the exact command, the `system.yaml` diff and the renderer's checks on a scratch copy before anything runs; an invalid value names the key and the rule. The same forms are in the palette (`⌘K`).
+
+![Change APIs on shop-api: the form opens at the right, filled in, with the command and the system.yaml diff](img/console/system-change.jpg)
 
 ### Autonomy: the System tab for what runs on its own
 
@@ -72,11 +74,13 @@ Autonomy is optional and off by default: every environment is at `observe` until
 
 ## Help in the console
 
-Every page has a one-line answer under its title and a **Help** button (or `?`). The help explains how to work on that page, the eight stages and where you decide, the keys, and where the data comes from. The whole guide is in the console too (**Menu → Guide** or `g`): this text with its screenshots, the process with every stage, and a reference of every command with its usage and a copy button.
+Every page has a one-line answer under its title and a **Help** button (or `?`). Next to a term on any page (a decision kind, a card colour, an instance state, a promote rule or policy, an autonomy level) a small **?** shows what it means on hover, tap or keyboard focus; its **More** link opens **How it works** (**Menu → How it works**, `/help`): the eight stages as numbered steps with the three where you decide, and every term grouped by topic, each with its own link. The tips and that page share one text per term (`console/glossary.py`). The Board and System pages also show a legend of the card colours and instance states. The help explains how to work on that page, the eight stages and where you decide, the keys, and where the data comes from. The whole guide is in the console too (**Menu → Guide** or `g`): this text with its screenshots, the process with every stage, and a reference of every command with its usage and a copy button.
 
 ![Help on the System page](img/console/help.jpg)
 
 ![The guide inside the console: contents, this text with its screenshots, the process and every command](img/console/guide.jpg)
+
+![How it works: the eight stages, the three where you decide, and every term by topic](img/console/how-it-works.jpg)
 
 ## Stages
 

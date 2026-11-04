@@ -18,7 +18,7 @@
   var opener = null;
   var activityTimer = null;
   var STALE_MS = 120000;
-  var LOCAL_ACTIONS = ["open-system", "palette", "retry-source", "close-panel", "stop-console", "close-palette"];
+  var LOCAL_ACTIONS = ["open-system", "palette", "retry-source", "close-panel", "close-drawer", "stop-console", "close-palette"];
   var DECISION_KEYS = {
     "a": ["approve", "approve-ship"],
     "p": ["promote"],
@@ -101,12 +101,16 @@
     if (!column) { moveInList(key === "ArrowUp" ? -1 : 1); return; }
     var inColumn = $all("[data-card]", column);
     var index = inColumn.indexOf(current);
-    if (key === "ArrowUp" || key === "ArrowDown") {
-      select(inColumn[Math.max(0, Math.min(inColumn.length - 1, index + (key === "ArrowUp" ? -1 : 1)))]);
+    // Stages are rows on the board: Left/Right move inside a stage, Up/Down to the next stage that has cards
+    var lanes = column.classList.contains("lane");
+    var within = lanes ? (key === "ArrowLeft" || key === "ArrowRight") : (key === "ArrowUp" || key === "ArrowDown");
+    var back = key === "ArrowUp" || key === "ArrowLeft";
+    if (within) {
+      select(inColumn[Math.max(0, Math.min(inColumn.length - 1, index + (back ? -1 : 1)))]);
       return;
     }
     var columns = $all("[data-column]");
-    var step = key === "ArrowLeft" ? -1 : 1;
+    var step = back ? -1 : 1;
     for (var i = columns.indexOf(column) + step; i >= 0 && i < columns.length; i += step) {
       var target = $all("[data-card]", columns[i]);
       if (target.length) { select(target[Math.min(index, target.length - 1)]); return; }
@@ -148,6 +152,8 @@
     }
     if (key === "Escape") {
       if (!$("#palette").hidden) { closePalette(); event.preventDefault(); return; }
+      var open = $("#model-drawer:not([hidden])");
+      if (open) { closeDrawer(); event.preventDefault(); return; }
       if ($("aside[data-panel]")) { closePanel(); event.preventDefault(); return; }
       if (!$("#activity-panel").hidden) { toggleActivity(false); }
       return;
@@ -226,9 +232,17 @@
 
   /* ---------- actions ---------- */
 
+  // The palette's search box is its only text field: a hidden data-from-palette input takes its text when the form is sent
+  function fromPalette(form) {
+    var box = $("#palette-q");
+    if (!form || !box) { return; }
+    $all("[data-from-palette]", form).forEach(function (n) { n.value = box.value.trim(); });
+  }
+
   function actionBody(button) {
     var args = parseValue(button.getAttribute("data-args")) || {};
     var form = button.closest("form");
+    fromPalette(form);
     if (form && typeof args === "object") {
       new FormData(form).forEach(function (value, name) { args[name] = value; });
     }
@@ -255,6 +269,8 @@
     var kind = button.getAttribute("data-action");
     var confirmText = button.getAttribute("data-confirm");
     if (confirmText && !window.confirm(confirmText)) { return; }
+    var owner = button.closest("form[data-form]");
+    if (owner) { owner.removeAttribute("data-dirty"); }   // confirmed: the next refresh may show the result
     if (kind === "open-in-claude" || kind === "take-over") {
       var object = parseValue(button.getAttribute("data-object"));
       var runId = object && typeof object === "object" ? object.run_id : object;
@@ -295,6 +311,7 @@
   }
 
   function submitForm(form) {
+    fromPalette(form);
     var fields = {};
     new FormData(form).forEach(function (value, name) { fields[name] = value; });
     var body = form.hasAttribute("data-wrap") ? { form: form.getAttribute("data-form"), fields: fields } : fields;
@@ -361,18 +378,60 @@
   }
 
   /* "edit rules" in an environment column: open the form and preselect that environment. */
-  function editRules(link) {
-    var details = document.getElementById("form-environment");
-    if (!details) { return false; }
-    details.open = true;
-    var field = $("[name='env']", details);
-    if (field) {
-      field.value = link.getAttribute("data-edit-env");
-      field.dispatchEvent(new Event("change", { bubbles: true }));
-      field.focus();
-    }
-    details.scrollIntoView({ block: "nearest" });
+  /* ---------- the System tree: rows that open, forms in the drawer ---------- */
+
+  var expanded = {};   // the rows a person opened, kept across refreshes of the content
+  var drawerOpener = null;
+
+  function toggleRow(button, show) {
+    var key = button.getAttribute("data-toggle");
+    var detail = $all("[data-detail-of]").filter(function (n) { return n.getAttribute("data-detail-of") === key; })[0];
+    if (!detail) { return; }
+    show = show === undefined ? detail.hidden : show;
+    detail.hidden = !show;
+    button.setAttribute("aria-expanded", String(show));
+    if (show) { expanded[key] = true; } else { delete expanded[key]; }
+  }
+
+  function restoreRows() {
+    $all("button[data-toggle]").forEach(function (b) { if (expanded[b.getAttribute("data-toggle")]) { toggleRow(b, true); } });
+  }
+
+  function setField(form, name, value) {
+    var field = $all("[name='" + name + "']", form).filter(function (n) { return !n.disabled; })[0];
+    if (field) { field.value = value; }
+    return field;
+  }
+
+  // Open form `kind` in the drawer with `prefill` filled in: the fields that switch others (action, env) first
+  function openForm(kind, prefill, opener) {
+    var drawer = document.getElementById("model-drawer");
+    var box = document.getElementById("form-" + kind);
+    if (!drawer || !box) { window.location.href = "/system"; return false; }
+    $all("[data-form-box]", drawer).forEach(function (b) { b.hidden = b !== box; });
+    var form = $("form[data-form]", box);
+    form.reset();
+    form.removeAttribute("data-dirty");
+    prefill = prefill || {};
+    ["action", "env"].forEach(function (k) { if (k in prefill) { setField(form, k, prefill[k]); } });
+    applyConditions(form);
+    Object.keys(prefill).forEach(function (k) { if (k !== "action" && k !== "env") { setField(form, k, prefill[k]); } });
+    drawer.hidden = false;
+    drawerOpener = opener || null;
+    var empty = $all("input:not([type='hidden']), select", form).filter(function (n) { return !n.disabled && !n.value; })[0];
+    (empty || $("input:not([type='hidden']), select", form) || form).focus();
+    // Only a removal is a whole change when the form opens; any other form waits for the first choice before it previews
+    if (prefill.action === "remove") { requestPreview(form); }
     return true;
+  }
+
+  function closeDrawer() {
+    var drawer = document.getElementById("model-drawer");
+    if (!drawer) { return; }
+    drawer.hidden = true;
+    $all("form[data-form][data-dirty]", drawer).forEach(function (f) { f.removeAttribute("data-dirty"); });
+    if (drawerOpener && document.body.contains(drawerOpener)) { drawerOpener.focus(); }
+    drawerOpener = null;
   }
 
   /* ---------- copy ---------- */
@@ -407,7 +466,16 @@
     var copy = target.closest("[data-copy]");
     if (copy) { copyCommand(copy); return; }
     var edit = target.closest("a[data-edit-env]");
-    if (edit && editRules(edit)) { event.preventDefault(); return; }
+    if (edit && openForm("environment", { env: edit.getAttribute("data-edit-env") }, edit)) { event.preventDefault(); return; }
+    var opener = target.closest("button[data-form-open]");
+    if (opener) {
+      var fields = {};
+      try { fields = JSON.parse(opener.getAttribute("data-prefill") || "{}"); } catch (e) { fields = {}; }
+      openForm(opener.getAttribute("data-form-open"), fields, opener);
+      return;
+    }
+    var twisty = target.closest("button[data-toggle]");
+    if (twisty) { toggleRow(twisty); return; }
     var link = target.closest("a[href^='/panel/']");
     if (link) { event.preventDefault(); openPanel(link.getAttribute("href"), link); return; }
     var button = target.closest("button[data-action], [data-activity]");
@@ -419,6 +487,7 @@
       else if (kind === "palette") { openPalette(); }
       else if (kind === "close-palette") { closePalette(); }
       else if (kind === "close-panel") { closePanel(); }
+      else if (kind === "close-drawer") { closeDrawer(); }
       else if (kind === "retry-source") { retrySource(button); }
       else if (kind === "stop-console") { stopConsole(); }
       else if (kind === "open-system") { openSystem(button); }
@@ -497,8 +566,12 @@
       var fresh = doc.getElementById("content");
       var current = $("#content");
       if (!fresh || !current) { return; }
+      // A form someone is filling in is not thrown away by a refresh; the page catches up on the next change after it
+      if ($("form[data-form][data-dirty]", current) || $("#model-drawer:not([hidden])", current)) { return; }
       var hadFocus = current.contains(document.activeElement);
       current.innerHTML = fresh.innerHTML;
+      $all("form[data-form]", current).forEach(applyConditions);
+      restoreRows();
       if (key) {
         var again = items().filter(function (n) { return (n.getAttribute("data-need") || n.getAttribute("data-card")) === key; })[0];
         if (again) {
@@ -608,6 +681,8 @@
     var area = $("[data-preview]", form) || form;
     var cmd = $("[data-command]", area) || $("[data-command]", form);
     if (cmd) { cmd.textContent = doc.command || ""; }
+    var hint = $("p.muted", area);
+    if (hint) { hint.hidden = !!doc.command; }
     var diff = $("[data-diff]", area);
     if (!diff) { diff = el("pre", { "data-diff": "" }); area.appendChild(diff); }
     diff.textContent = doc.diff || "";
@@ -638,9 +713,23 @@
     });
   }
 
+  // A field with data-show-when="action=remove" (or "env=dev|staging") shows only while that field has that value; a
+  // hidden field is disabled, so FormData leaves it out and the preview sees only what is on screen
+  function applyConditions(form) {
+    $all("[data-show-when]", form).forEach(function (box) {
+      var rule = box.getAttribute("data-show-when").split("=");
+      var source = $all("[name='" + rule[0] + "']", form).filter(function (n) { return !n.disabled; })[0];
+      var show = !!source && rule[1].split("|").indexOf(source.value) >= 0;
+      box.hidden = !show;
+      $all("input, select, textarea", box).forEach(function (n) { n.disabled = !show; });
+    });
+  }
+
   function onFormChange(event) {
     var form = event.target.closest ? event.target.closest("form[data-form]") : null;
     if (!form) { return; }
+    form.setAttribute("data-dirty", "");
+    applyConditions(form);
     window.clearTimeout(previewTimers.get(form));
     previewTimers.set(form, window.setTimeout(function () { requestPreview(form); }, 200));
   }
@@ -653,6 +742,7 @@
     document.addEventListener("submit", onSubmit);
     document.addEventListener("input", onFormChange);
     document.addEventListener("change", onFormChange);
+    $all("form[data-form]").forEach(applyConditions);
     $("#activity-panel").addEventListener("click", onActivityClick);
     $("#palette-q").addEventListener("input", function () {
       window.clearTimeout(paletteTimer);

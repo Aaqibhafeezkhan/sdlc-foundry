@@ -17,7 +17,7 @@ from typing import Any
 
 import yaml
 
-from console import actions, handoff, layout, sources as sources_mod
+from console import actions, glossary, handoff, layout, sources as sources_mod
 from console.html import action_button, command_block, definition_list, engine_badge, esc, freshness, signal_facts, stage_badge, table, unavailable
 
 DEFAULT_BUDGET = "15"
@@ -109,7 +109,9 @@ class Decide:
 
 
 def _head(item: dict, now: datetime) -> str:
-    return (f'<p>{stage_badge(str(item.get("stage")))} <strong>{esc(item.get("kind"))}</strong> '
+    kind = str(item.get("kind"))
+    tip = glossary.tip(kind, "right") if kind in glossary.TERMS else ""
+    return (f'<p>{stage_badge(str(item.get("stage")))} <strong class="kind" data-kind="{esc(kind)}">{esc(kind)}</strong>{tip} '
             f'<time datetime="{esc(item.get("since"))}">waiting {esc(age(item.get("since"), now))}</time></p>'
             f'<p>{esc(item.get("reason"))}</p>')
 
@@ -142,7 +144,7 @@ def _row(item: dict, now: datetime) -> tuple[str, list[str]]:
     """The attributes of the `<tr>` and its cells."""
     attrs = f'data-need="{esc(item.get("id"))}" data-open="/panel/need/{esc(_quote(str(item.get("id"))))}" tabindex="0"'
     badge = engine_badge((item.get("object") or {}).get("engine"))
-    cells = [f'<strong>{esc(item.get("kind"))}</strong> {badge}'.rstrip(), stage_badge(str(item.get("stage"))),
+    cells = [f'<strong class="kind" data-kind="{esc(item.get("kind"))}">{esc(item.get("kind"))}</strong> {badge}'.rstrip(), stage_badge(str(item.get("stage"))),
              f'<time datetime="{esc(item.get("since"))}">{esc(age(item.get("since"), now))}</time>',
              f'<span class="reason-text">{esc(item.get("reason"))}</span>']
     return attrs, cells
@@ -160,7 +162,7 @@ def _first_steps(ctx: Any) -> str:
     if rows:
         names = ", ".join(f"<strong>{esc(r.get('component'))}</strong>" for r in rows)
         running = f"<p>Already running: {names}.</p>"
-    return ('<section class="empty"><h2>Nothing waits for you</h2>' + running +
+    return ('<section class="empty"><span class="empty-mark" aria-hidden="true"></span><h2>Nothing waits for you</h2>' + running +
             "<p>Next steps to a first change:</p><ol>"
             '<li><button type="button" class="btn primary" data-action="palette">Describe your first change</button></li>'
             '<li><a href="/settings#notifications">Choose notifications</a> so the console tells you when a decision waits.</li>'
@@ -178,11 +180,16 @@ def page(ctx: Any, query: dict[str, str]) -> str:
         now = _now(ctx)
         rows = [_row(i, now) for i in items]
         parts.append(table([c for _, c in rows], ["Decision", "Stage", "Waiting", "Why"], caption="Decisions, oldest first",
-                           row_attrs=[a for a, _ in rows]))
+                           row_attrs=[a for a, _ in rows],
+                           after_head={"Decision": glossary.tip("decision", "right"), "Stage": glossary.tip("stage"),
+                                       "Waiting": glossary.tip("waiting")}))
+    elif source is not None and not source.error and not source.read_at:   # not read yet: "nothing waits" would be a guess
+        parts.append('<section class="empty loading" aria-busy="true"><span class="empty-mark" aria-hidden="true"></span>'
+                     '<h2>Reading the open decisions</h2><p class="muted">This page fills in by itself in a moment.</p></section>')
     elif source is None or not source.error:
         parts.append(_first_steps(ctx))
-    if source is not None:
-        parts.append(f"<p>{freshness(source.read_at)}</p>")
+    if source is not None and (source.read_at or not source.error):   # the unavailable part already says it was never read
+        parts.append(f'<p class="stamp">{freshness(source.read_at)}</p>')
     return layout.page("Inbox", "inbox", "".join(parts), state=ctx.state())
 
 
