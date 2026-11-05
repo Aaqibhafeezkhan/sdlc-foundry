@@ -10,7 +10,8 @@ cplat resource add <ARGS>
 
 1. **Preview** with `--dry-run` and show it verbatim; errors carry a `fix:` line.
 2. **Run** with `--pr` (one PR; the user asked for it, do not ask again).
-3. **Next**: components opt in with `/component:set <component> --uses <name>`, which injects `DATABASE_URL` and `PG*` (a database), `S3_*` and `AWS_*` (a bucket) `REDIS_*` (a cache) or `NATS_*` (a broker: no `--uses`, an events API binds it). Relay the next steps `cplat` prints.
+3. **Wait** once the PR is merged (merge it with `cplat pr wait <pr> --merge` only when the user asked) and a component uses the resource: `cplat system wait --env <env> --refresh` for each environment with an instance of it, `--refresh` right after a merge you made (without it when the user merged). It prints a line each time an app's state changes and ends `READY:` (exit 0), `RED:` (exit 1: a sync error, a failed sync or `Degraded` at the new revision; show its lines and stop, nothing is retried or rolled back) or `TIMEOUT:` (exit 2: run the same wait again, the command it prints when Argo CD is behind on the revision, at most twice; after the third timeout escalate with cause `environment`: `cplat component ship escalate '<the TIMEOUT line>' --cause environment` inside a ship run, otherwise report the `TIMEOUT:` lines to the user as an environment problem). Never write a polling loop on `kubectl`, `gh` or `cplat`: the wait is the only way to wait.
+4. **Next**: components opt in with `/component:set <component> --uses <name>`, which injects `DATABASE_URL` and `PG*` (a database), `S3_*` and `AWS_*` (a bucket) `REDIS_*` (a cache) or `NATS_*` (a broker: no `--uses`, an events API binds it). Relay the next steps `cplat` prints.
 
 A resource has a name (lower-case letters, digits and `-`) and a type. The four types are `database`, `bucket`, `cache` and `broker`; all four are built and no type is reserved any more. `/resource:add postgres` without `--type` still adds a database; any other name needs `--type`. A name that exists or is invalid changes nothing.
 
@@ -23,5 +24,7 @@ A resource has a name (lower-case letters, digits and `-`) and a type. The four 
 - **Operator**: an in-cluster database needs CloudNativePG and an in-cluster bucket needs the SeaweedFS operator, an in-cluster broker needs NACK, which the platform installs through `operators/`. Apply `operators/root.yaml` once per cluster (`KUBE_CONTEXT=<ctx> devbox run bootstrap`; `devbox run cluster-up` does it locally). An environment that sets `operators: owner` must have the operator installed by its owner.
 
 Observability is not a resource: it is set per environment under `environments.<env>.observability` in `system.yaml`; `resource add observability` exits 1 and says so. Removing a resource never deletes the database, bucket or broker data. No backups, PITR or pooling are provided (ADR-020).
+
+Read `cplat`'s output whole: never pipe it into `grep`, `head` or `tail` (its last lines carry the decisions, next steps and fixes); use `--json` where the command offers it.
 
 > If a step fails because a platform template, script or command misbehaves (not because of the user's code), stop, summarize it in two lines and offer `/issue:report` so the user can file it. Never file anything without their OK (only a `platform` escalation is filed by the platform itself, ADR-033).

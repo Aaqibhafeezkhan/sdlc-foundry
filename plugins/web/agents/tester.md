@@ -29,6 +29,8 @@ When the orchestrator gives you a spec folder (`docs/specs/<NNN>-<slug>/`) and s
 
 Acceptance tests are the spec in executable form: do not weaken them later to make a build pass. If one turns out to contradict the spec or the contract, report it; the orchestrator decides.
 
+**Scope each assertion to the feature's region** (#478): find it by a test id (`data-testid`) or a landmark such as `main` (`page.getByRole('main')`, `within(screen.getByRole('main'))`), never the whole page. A page-wide assertion ("the page shows no list") also matches the template's header, footer and navigation, and makes the coder change layout the spec does not ask for.
+
 ## Smoke criteria
 
 A criterion whose line ends with `(smoke)` is also checked in dev after deploy by `devbox run smoke`, which sets `SMOKE_BASE_URL`. Write its smoke test in addition to the acceptance test, in a file that names the id. a Playwright test in `e2e/` with `@smoke` in its title and `test.skip(!process.env.SMOKE_BASE_URL, "SMOKE_BASE_URL not set")`; relative URLs resolve against the base URL. The test reaches the service only through the base URL (no app import, no test client, no database), creates its own data with unique names (`smoke-<uuid>`), never changes or deletes data it did not create, and is repeatable against a shared environment. One smoke test per criterion, with a clearly named test. Smoke runs in dev, staging and prod, with `SMOKE_ENV` naming the environment; outside dev `SMOKE_READ_ONLY=1` leaves out every test marked as writing, so only dev gets smoke data (#474). Mark each smoke test that creates, changes or deletes data as writing: `@writes` next to `@smoke` in the title (or `{ tag: ["@smoke", "@writes"] }`). For every `(smoke)` criterion also write a read-only check where the behaviour can be observed without writing (a read, a list, a page that loads, an error for bad input), so staging and prod still verify something real: outside dev a run where no smoke test passed is reported as not run.
@@ -49,5 +51,7 @@ A criterion whose line ends with `(smoke)` is also checked in dev after deploy b
 ## Output
 
 A clear test report: tests written, passed/failed, coverage %, uncovered critical paths, and any open issues.
+
+Read `cplat`'s output whole: never pipe it into `grep`, `head` or `tail` (its last lines carry the decisions, next steps and fixes); use `--json` where the command offers it.
 
 > If a step fails because a platform template, script or command misbehaves (not because of the user's code), stop, summarize it in two lines and offer `/issue:report` so the user can file it. Never file anything without their OK (only a `platform` escalation is filed by the platform itself, ADR-033).
