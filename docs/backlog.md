@@ -131,6 +131,7 @@ Items specified in the PRD but not built are listed after the table, so the gaps
 | [130-quality-gates-fail-when-they-checked](specs/130-quality-gates-fail-when-they-checked/spec.md) — Quality gates fail when they checked nothing | P1 | done | 16 | #285 |
 | [131-runs-that-finish-on-their-own](specs/131-runs-that-finish-on-their-own/spec.md) — Runs that finish on their own | P1 | done | 19 | #324 |
 | [134-a-pr-runs-only-the-e2e-it-needs](specs/134-a-pr-runs-only-the-e2e-it-needs/spec.md) — A pull request runs only the e2e it needs, and that e2e runs in parallel parts | P1 | done | 9 | #281 |
+| [136-the-whole-journey-fits-a-time-budget](specs/136-the-whole-journey-fits-a-time-budget/spec.md) — The whole journey fits a time budget | P1 | done | 4 |  |
 | [139-a-backup-bucket-without-a-using-component](specs/139-a-backup-bucket-without-a-using-component/spec.md) — A backup bucket without a using component | P1 | done | 5 | #418 |
 | [145-smoke-tests-that-write-run-only-in-dev](specs/145-smoke-tests-that-write-run-only-in-dev/spec.md) — Smoke tests that write run only in dev | P1 | done | 7 | #474 |
 | [146-one-owner-per-operator-on-the-local-cluster](specs/146-one-owner-per-operator-on-the-local-cluster/spec.md) — One owner per operator on the local cluster | P1 | done | 5 | #425 |
