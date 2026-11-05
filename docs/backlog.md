@@ -134,6 +134,7 @@ Items specified in the PRD but not built are listed after the table, so the gaps
 | [136-the-whole-journey-fits-a-time-budget](specs/136-the-whole-journey-fits-a-time-budget/spec.md) — The whole journey fits a time budget | P1 | done | 4 |  |
 | [139-a-backup-bucket-without-a-using-component](specs/139-a-backup-bucket-without-a-using-component/spec.md) — A backup bucket without a using component | P1 | done | 5 | #418 |
 | [143-the-coordinator-waits-with-cplat](specs/143-the-coordinator-waits-with-cplat/spec.md) — The coordinator waits with cplat, not hand-written loops | P1 | done | 11 | #475 |
+| [144-one-gitops-pr-per-environment-for-a](specs/144-one-gitops-pr-per-environment-for-a/spec.md) — One gitops PR per environment for a system ship | P1 | done | 8 |  |
 | [145-smoke-tests-that-write-run-only-in-dev](specs/145-smoke-tests-that-write-run-only-in-dev/spec.md) — Smoke tests that write run only in dev | P1 | done | 7 | #474 |
 | [146-one-owner-per-operator-on-the-local-cluster](specs/146-one-owner-per-operator-on-the-local-cluster/spec.md) — One owner per operator on the local cluster | P1 | done | 5 | #425 |
 | [005-report-a-platform-problem-without](specs/005-report-a-platform-problem-without/spec.md) — Report a platform problem without leaking secrets | P2 | done | 3 |  |
