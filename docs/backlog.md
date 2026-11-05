@@ -16,6 +16,7 @@ Items specified in the PRD but not built are listed after the table, so the gaps
 |---|---|---|---|---|
 | [107-open-source-tools-are-adopted-on](specs/107-open-source-tools-are-adopted-on/spec.md) — Open-source tools are adopted on measured value | P1 | approved | 11 | #164 |
 | [137-cplat-waits-out-github-s-rate-limit](specs/137-cplat-waits-out-github-s-rate-limit/spec.md) — cplat waits out GitHub's rate limit | P1 | approved | 7 |  |
+| [138-release-tags-the-staging-build](specs/138-release-tags-the-staging-build/spec.md) — A component release tags the build staging tested | P1 | approved | 7 | #426 |
 | [140-one-repo-feature-takes-the-component-route](specs/140-one-repo-feature-takes-the-component-route/spec.md) — A one-repo feature takes the component route | P1 | approved | 4 |  |
 | [141-an-approved-plan-asks-no-new-questions](specs/141-an-approved-plan-asks-no-new-questions/spec.md) — An approved system plan asks no new questions | P1 | approved | 5 |  |
 | [142-no-avoidable-stops-in-the-journey](specs/142-no-avoidable-stops-in-the-journey/spec.md) — No avoidable stops in the journey | P1 | approved | 5 |  |
