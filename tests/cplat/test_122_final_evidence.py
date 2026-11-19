@@ -75,11 +75,12 @@ def test_done_lists_releases_with_their_date_and_filters_by_period(console, monk
     monkeypatch.setattr(sources_mod, "utcnow", lambda: datetime.datetime(2026, 10, 27, tzinfo=datetime.timezone.utc))  # the 30-day window must not drift with the calendar
     c = console()
     doc = needs_json()
-    doc["releases"] = [{"repo": "acme/shop-api", "component": "shop-api", "tag": "v1.4.0", "published_at": "2026-10-20T10:00:00Z", "url": "u"},
+    recent = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=10)).strftime("%Y-%m-%dT10:00:00Z")   # inside the 30-day period whenever it runs
+    doc["releases"] = [{"repo": "acme/shop-api", "component": "shop-api", "tag": "v1.4.0", "published_at": recent, "url": "u"},
                        {"repo": "acme/shop-api", "component": "shop-api", "tag": "v0.9.0", "published_at": "2026-01-01T10:00:00Z", "url": "u"}]
     c.set("needs", doc)
     _, text = c.page("/board?view=done&period=30")
-    assert "1.4.0" in text and "2026-10-20" in text and "0.9.0" not in text
+    assert "1.4.0" in text and recent[:10] in text and "0.9.0" not in text
     assert "0.9.0" in c.page("/board?view=done&period=all")[1]
 
 
