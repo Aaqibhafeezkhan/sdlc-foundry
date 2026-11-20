@@ -15,7 +15,6 @@ Items specified in the PRD but not built are listed after the table, so the gaps
 | Spec | Priority | Status | Criteria | Tracks |
 |---|---|---|---|---|
 | [107-open-source-tools-are-adopted-on](specs/107-open-source-tools-are-adopted-on/spec.md) — Open-source tools are adopted on measured value | P1 | approved | 11 | #164 |
-| [193-building-and-releasing-run-on-their-own](specs/193-building-and-releasing-run-on-their-own/spec.md) — Building and releasing run on their own and interrupt only to ask | P1 | approved | 8 |  |
 | [001-create-a-repo-of-any-shape-with-one](specs/001-create-a-repo-of-any-shape-with-one/spec.md) — Create a repo of any shape with one command | P0 | done | 9 |  |
 | [002-generated-repos-enable-their-plugins](specs/002-generated-repos-enable-their-plugins/spec.md) — Generated repos enable their plugins automatically | P0 | done | 2 |  |
 | [003-pull-template-updates-into-an-existing](specs/003-pull-template-updates-into-an-existing/spec.md) — Pull template updates into an existing repo safely | P0 | done | 5 |  |
@@ -177,6 +176,7 @@ Items specified in the PRD but not built are listed after the table, so the gaps
 | [190-promotion-respects-an-environment-limit](specs/190-promotion-respects-an-environment-limit/spec.md) — Promotion respects an environment limit in the spec | P1 | done | 7 | #688 |
 | [191-upgrades-are-tested-fast-across-skipped](specs/191-upgrades-are-tested-fast-across-skipped/spec.md) — Upgrades are tested fast, across skipped versions, and the database drill leaves the release gate | P1 | done | 8 | #400 |
 | [192-the-delivery-process-guides-the-person](specs/192-the-delivery-process-guides-the-person/spec.md) — The delivery process guides the person from triage to release | P1 | done | 10 |  |
+| [193-building-and-releasing-run-on-their-own](specs/193-building-and-releasing-run-on-their-own/spec.md) — Building and releasing run on their own and interrupt only to ask | P1 | done | 8 |  |
 | [194-a-system-ship-wait-returns-before-the](specs/194-a-system-ship-wait-returns-before-the/spec.md) — A system ship wait returns before the Bash limit | P1 | done | 4 |  |
 | [195-a-restored-copy-is-checked-without](specs/195-a-restored-copy-is-checked-without/spec.md) — A restored copy is checked without kubectl | P1 | done | 5 | #683 |
 | [196-triage-proposes-a-priority-the-user](specs/196-triage-proposes-a-priority-the-user/spec.md) — Triage and new specs propose a priority the user confirms | P1 | done | 12 |  |

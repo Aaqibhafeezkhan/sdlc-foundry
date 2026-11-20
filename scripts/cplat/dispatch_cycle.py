@@ -2,7 +2,9 @@
 
   run_cycle(repo, policy, *, max_age=0, announce=None) -> CycleResult   observe and act on the units, book tokens, read the backlog,
                                                                       fill the free slots, write the needs, notify
-  evaluate(repo, policy, *, max_age=0) -> dict                         the `plan --json` document: the same decisions, no write to
+  preview(repo, policy) -> list[dict]                                  the ready queue in `plan`'s order for `cplat next` (spec 193):
+                                                                      no write, no agent call, no booking
+  evaluate(repo, policy, *, max_age=0) -> dict                        the `plan --json` document: the same decisions, no write to
                                                                       GitHub, branches, worktrees or claims
 
 Both share `_schedule`: the ready items in order take the free slots one by one (ship-busy, the premise check of an issue, the mode
@@ -391,6 +393,36 @@ def _candidate_doc(e: Entry) -> dict:
             "filler": e.filler}
 
 
+def _ref(key: str) -> str:
+    """`#123` for `issue-123`, `spec 123` for `spec-123`."""
+    return f"#{key[6:]}" if key.startswith("issue-") else f"spec {int(key[5:])}"
+
+
+def preview(repo: Path | str, policy) -> list[dict]:
+    """The ready candidates and the ship-busy holds of `plan` in its order, numbered from 1 (spec 193). It judges as `evaluate` does and
+    applies the ship-busy rule of `_schedule`, but asks no agent, books no tokens and writes nothing (a snapshot cached for up to 300
+    seconds, never fetched). `after` is the ref of the ship unit that runs or of the earlier ship candidate a ship waits for."""
+    repo = Path(repo)
+    slug = ds.slug_of(repo)
+    units = ds.all_units(slug)
+    snap = dispatch_backlog.snapshot(repo, slug, max_age=300, fetch=False)
+    state = ds.load(slug)
+    gate = dispatch_gate.gate(slug, policy, state, dispatch_budget.usage_today(slug))   # today's usage, booking nothing
+    ordered, _held, _filler = _judge(repo, slug, policy, snap, state, units, gate)
+    busy = dispatch_ready.ship_busy_unit(units)
+    waiting_for = _ref(ds.unit_key(busy)) if busy else None
+    out: list[dict] = []
+    for v in ordered:
+        cand = v.cand
+        after = None
+        if cand.kind == "ship":
+            after = waiting_for
+            waiting_for = waiting_for or _ref(cand.key)
+        out.append({"n": len(out) + 1, "key": cand.key, "item": cand.item, "ref": _ref(cand.key), "kind": cand.kind,
+                    "title": cand.title, "spec": cand.spec_id, "tracks": list(cand.tracks), "after": after})
+    return out
+
+
 def evaluate(repo: Path | str, policy, *, max_age: int = 0) -> dict:
     """The document of `cplat dispatch plan --json`. It reads GitHub (a cached snapshot only when younger than `max_age` seconds),
     fetches nothing and writes nothing to GitHub, branches, worktrees or claims; it may make the premise and mode calls of the items
@@ -409,4 +441,4 @@ def evaluate(repo: Path | str, policy, *, max_age: int = 0) -> dict:
                                   unavailable=[{"source": k, "error": v} for k, v in unavailable.items()], gate=sched.gate)
 
 
-__all__ = ["CycleResult", "Entry", "Schedule", "effective_slots", "evaluate", "free_numbers", "run_cycle"]
+__all__ = ["CycleResult", "Entry", "Schedule", "effective_slots", "evaluate", "free_numbers", "preview", "run_cycle"]

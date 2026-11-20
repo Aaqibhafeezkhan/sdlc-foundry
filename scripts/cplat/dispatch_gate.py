@@ -51,12 +51,13 @@ def usd(x: float) -> str:
     return f"${x:.2f}"
 
 
-def _limits(policy: dp.Policy) -> tuple[float | None, float | None, int | None]:
+def _limits(policy: dp.Policy, slug: str | None = None) -> tuple[float | None, float | None, int | None]:
+    """The USD caps and the token cap: today's raise of the token cap (spec 193) when `slug` is given."""
     b = policy.values.get("budget") or {}
 
     def num(v):
         return None if v is None or isinstance(v, bool) else v
-    return num(b.get("usd_per_day")), num(b.get("usd_per_month")), db.limit_of(policy)
+    return num(b.get("usd_per_day")), num(b.get("usd_per_month")), db.limit_of(policy, slug)
 
 
 def cost_doc(usage: db.Usage, policy: dp.Policy) -> dict:
@@ -74,7 +75,7 @@ def _need(slug: str, key: str, reason: str, command: str, consequence: dict) -> 
 
 
 def _needs(slug: str, policy: dp.Policy, usage: db.Usage, plan_unknown: bool) -> list[dict]:
-    day, month, tokens = _limits(policy)
+    day, month, tokens = _limits(policy, slug)
     out: list[dict] = []
     if day is not None and usage.usd >= day:
         out.append(_need(slug, usage.day, f"daily cost budget reached: {usd(usage.usd)} of {usd(day)}", NEED_DAILY_USD,
@@ -109,7 +110,7 @@ def _unknown(policy: dp.Policy, usage: db.Usage) -> list[str]:
     return list(dict.fromkeys(names))
 
 
-def _hold(state: dict, policy: dp.Policy, usage: db.Usage, pace: dpace.Pace | None) -> tuple[str, str] | None:
+def _hold(state: dict, policy: dp.Policy, usage: db.Usage, pace: dpace.Pace | None, slug: str | None = None) -> tuple[str, str] | None:
     paused = (state.get("steering") or {}).get("paused")
     if paused == "pause":
         return PAUSED, PAUSED
@@ -117,7 +118,7 @@ def _hold(state: dict, policy: dp.Policy, usage: db.Usage, pace: dpace.Pace | No
         return DRAIN, DRAIN
     if pace is not None and pace.hold is not None:
         return pace.hold
-    day, month, tokens = _limits(policy)
+    day, month, tokens = _limits(policy, slug)
     if day is not None and usage.usd >= day:
         return DAILY, f"{DAILY}: {usd(usage.usd)} of {usd(day)}"
     if month is not None and usage.month_usd >= month:
@@ -134,7 +135,7 @@ def gate(slug: str, policy: dp.Policy, state: dict, usage: db.Usage, *, now: dt.
     now = ds.now() if now is None else now
     plan_mode = dp.mode(policy) == "plan"
     pace = dpace.pace(policy, now) if plan_mode else None
-    hold = _hold(state, policy, usage, pace)
+    hold = _hold(state, policy, usage, pace, slug)
     out = Gate(cost=cost_doc(usage, policy), hints=_hints(policy, now))
     if hold is not None:
         out.why_not, out.text = hold
