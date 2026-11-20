@@ -118,3 +118,4 @@ Decisions that shape how the platform works, with the context and the alternativ
 | [117](117-uv-script-runner.md) | Inline scripts in cplat and recipes run through uv-script.sh, keyed by their dependencies, not their path |
 | [118](118-shared-input-rules-live-in-the-plan-contract.md) | Shared input rules and the error contract are YAML data in the plan's contract; each repo keeps a copy it checks in CI, and the gitops-app pin PR refuses a stale copy |
 | [120](120-dispatcher-budget-units.md) | The dispatcher budgets in plan percentages (status line sensor) or USD (price table), never in raw tokens |
+| [121](121-red-tests-fail-for-the-missing-behaviour-before-they-freeze.md) | A red acceptance test freezes only when it fails for the missing behaviour; edits that change no assertion pass test-diff without a record |
