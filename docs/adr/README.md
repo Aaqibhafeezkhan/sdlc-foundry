@@ -130,3 +130,4 @@ Decisions that shape how the platform works, with the context and the alternativ
 | [129](129-a-system-ships-mechanical-loop-runs-in-cplat.md) | After phase plan a system ship's publish, repos, land and completion run in a detached cplat driver that starts no model; the session builds the gitops entry, waits and hands over |
 | [130](130-triage-closes-confirmed-issues.md) | Triage closes confirmed question, duplicate and wontfix issues and silent needs-info issues as not planned; comments to outside reporters use plain words. |
 | [131](131-an-amended-spec-judges-only-the-tests-of-its-changed-criteria.md) | The red check of an amended spec judges only the tests of criteria new or changed since its last done commit; every other test must pass or the build escalates as a regression |
+| [132](132-fix-entries-name-their-cause.md) | A platform fix entry names its cause in a closing Caused by: line; change-quality derives the change-failure rate from it |
